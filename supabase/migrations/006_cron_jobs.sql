@@ -1,19 +1,20 @@
 -- Migration 006: pg_cron jobs
 --
--- Job 1 — fetch-activity: polls Polymarket CLOB for new trades every 2 minutes
+-- Job 1 — fetch-activity: polls Polymarket CLOB for new trades every minute
 -- Job 2 — resolve-outcomes: checks Gamma API for market resolutions at :02/:17/:32/:47
 --
 -- URL and service_role_key are read from copy_pros.config (see migration 008).
 -- ALTER DATABASE SET requires superuser not available in Supabase managed Postgres.
 
 -- Remove existing jobs if re-running migration
+SELECT cron.unschedule('fetch-activity-every-1min')  WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'fetch-activity-every-1min');
 SELECT cron.unschedule('fetch-activity-every-2min')  WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'fetch-activity-every-2min');
 SELECT cron.unschedule('resolve-outcomes-15min')     WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'resolve-outcomes-15min');
 
--- Job 1: Activity polling every 2 minutes
+-- Job 1: Activity polling every minute
 SELECT cron.schedule(
-  'fetch-activity-every-2min',
-  '*/2 * * * *',
+  'fetch-activity-every-1min',
+  '* * * * *',
   $$
     SELECT net.http_post(
       url     := (SELECT value FROM copy_pros.config WHERE key = 'supabase_url') || '/functions/v1/fetch-activity',
