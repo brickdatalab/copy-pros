@@ -1,0 +1,16 @@
+# Secrets — never commit
+.env
+.env.local
+.env.*.local
+
+# Supabase local dev
+supabase/.temp/
+supabase/.branches/
+
+# Node / Deno
+node_modules/
+.deno/
+
+# OS
+.DS_Store
+Thumbs.db
