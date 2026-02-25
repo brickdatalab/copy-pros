@@ -4,6 +4,26 @@ All notable changes to `copy_pros` are documented here. Commits are listed newes
 
 ---
 
+## [pending] — 2026-02-25 — fix: market resolution loop + outcome constraint
+
+**Why:** After the first live stream test, two bugs surfaced:
+
+1. **Gamma API unreliable for short-duration markets.** The `resolution_loop()` in `stream_market.py` was querying Gamma via `?conditionIds={condition_id}`. For `eth-updown-5m` markets, this returned a completely different market (a Biden-era market whose condition ID hash-collides in Gamma's index). The CLOB REST endpoint (`GET /markets/{condition_id}`) is authoritative — it returns the correct market with `closed: true` and `tokens[*].winner: true/false` after settlement.
+
+2. **`winning_outcome` CHECK constraint too narrow.** The original constraint enforced `winning_outcome IN ('YES', 'NO')`. Polymarket markets use arbitrary outcome labels: `'Up'`/`'Down'` for eth-updown, `'Higher'`/`'Lower'`, candidate names, etc. Storing the CLOB token's `outcome` field verbatim is the right approach.
+
+### Changed
+
+- **`scripts/stream_market.py`** — `resolution_loop()` now uses `CLOB_BASE/markets/{condition_id}` (REST) instead of Gamma. Resolution detection: `closed=true` + `tokens[].winner==true`. Winner label is taken from `tokens[].outcome` (verbatim from CLOB, not hardcoded YES/NO). `GAMMA_BASE` constant replaced with `CLOB_BASE`.
+- **`scripts/register_event.py`** — Fixed `event_category` extraction (Gamma returns `category` as a dict `{id, label, ...}`, not a plain string; now extracts `.label`/`.name`/`.slug`). Added `end_date` capture from Gamma `endDate` field and writes it to `copy_pros.markets`.
+
+### Added
+
+- **`supabase/migrations/015_markets_end_date.sql`** — Adds `end_date timestamptz` to `copy_pros.markets`. Backfills existing rows by extracting the trailing Unix timestamp from the event slug and adding 300 seconds. Required for the resolution loop to know when a market's window has passed.
+- **`supabase/migrations/016_relax_winning_outcome_check.sql`** — Drops `markets_winning_outcome_check` constraint (was `IN ('YES','NO')`). Outcome labels come from the CLOB token directly and can be any string.
+
+---
+
 ## [1576373] — 2026-02-25 — feat: real-time Polymarket event streaming pipeline
 
 Adds a complete second subsystem to `copy_pros`: on-demand registration of Polymarket events with live WebSocket orderbook streaming. Runs locally while the user is at their computer. Data purges automatically 48h after market resolution to keep tables clean.

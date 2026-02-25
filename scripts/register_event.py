@@ -76,7 +76,13 @@ async def register(slug: str) -> None:
         event = await fetch_event(slug, client)
 
     event_title    = event.get("title") or event.get("name") or slug
-    event_category = event.get("category") or event.get("tags", [None])[0]
+    raw_cat = event.get("category") or event.get("tags", [None])[0]
+    if isinstance(raw_cat, dict):
+        event_category = raw_cat.get("label") or raw_cat.get("name") or raw_cat.get("slug")
+    elif isinstance(raw_cat, str):
+        event_category = raw_cat
+    else:
+        event_category = None
     markets_raw    = event.get("markets", [])
 
     if not markets_raw:
@@ -97,6 +103,7 @@ async def register(slug: str) -> None:
             question   = m.get("question") or m.get("title") or cid
             is_neg     = bool(m.get("negRisk") or m.get("neg_risk"))
             is_closed  = bool(m.get("closed") or m.get("resolved"))
+            end_date   = m.get("endDate") or m.get("end_date")  # ISO-8601 string or None
 
             # Try to get token IDs from the market payload first
             clob_token_ids = m.get("clobTokenIds") or m.get("clob_token_ids")
@@ -131,6 +138,7 @@ async def register(slug: str) -> None:
                 "token_id_no":   no_token,
                 "is_neg_risk":   is_neg,
                 "is_resolved":   is_closed,
+                "end_date":      end_date,
             })
 
     if not market_rows:
@@ -161,13 +169,15 @@ async def register(slug: str) -> None:
         for mr in market_rows:
             result = await conn.fetchval("""
                 INSERT INTO markets
-                  (event_id, condition_id, question, token_id_yes, token_id_no, is_neg_risk, is_resolved)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                  (event_id, condition_id, question, token_id_yes, token_id_no,
+                   is_neg_risk, is_resolved, end_date)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 ON CONFLICT (condition_id) DO UPDATE
                   SET question     = EXCLUDED.question,
                       token_id_yes = EXCLUDED.token_id_yes,
                       token_id_no  = EXCLUDED.token_id_no,
-                      is_neg_risk  = EXCLUDED.is_neg_risk
+                      is_neg_risk  = EXCLUDED.is_neg_risk,
+                      end_date     = COALESCE(EXCLUDED.end_date, markets.end_date)
                 RETURNING id
             """,
                 event_id,
@@ -177,6 +187,7 @@ async def register(slug: str) -> None:
                 mr["token_id_no"],
                 mr["is_neg_risk"],
                 mr["is_resolved"],
+                mr["end_date"],
             )
             if result:
                 inserted += 1

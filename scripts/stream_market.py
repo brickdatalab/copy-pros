@@ -25,6 +25,7 @@ Data stays in Supabase. Purge runs automatically 48h after each market resolves.
 import asyncio
 import asyncpg
 import websockets
+import httpx
 import json
 import os
 import sys
@@ -46,12 +47,14 @@ logging.basicConfig(
 log = logging.getLogger("stream")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-CLOB_WS           = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
-SNAPSHOT_INTERVAL = 1.0    # seconds between snapshot/indicator writes
-RECONNECT_DELAY   = 3.0    # seconds before WebSocket reconnect
-SPREAD_HIST_SECS  = 30     # lookback window for spread momentum
-MID_HIST_SECS     = 300    # longest mid-price momentum window (5m)
-TICK_BATCH_SIZE   = 50     # max raw ticks to flush per snapshot cycle
+CLOB_WS             = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+CLOB_BASE           = "https://clob.polymarket.com"
+SNAPSHOT_INTERVAL   = 1.0    # seconds between snapshot/indicator writes
+RECONNECT_DELAY     = 3.0    # seconds before WebSocket reconnect
+SPREAD_HIST_SECS    = 30     # lookback window for spread momentum
+MID_HIST_SECS       = 300    # longest mid-price momentum window (5m)
+TICK_BATCH_SIZE     = 50     # max raw ticks to flush per snapshot cycle
+RESOLUTION_INTERVAL = 30.0   # seconds between resolution checks
 
 
 # ── Orderbook ─────────────────────────────────────────────────────────────────
@@ -440,6 +443,97 @@ class MarketStreamer:
                 active = sum(1 for s in self.states.values() if s.book_yes.is_ready())
                 log.info(f"Active markets: {active}/{len(self.states)}")
 
+    # ── Resolution loop ───────────────────────────────────────────────────────
+
+    async def resolution_loop(self) -> None:
+        """
+        Every RESOLUTION_INTERVAL seconds:
+          1. Poll CLOB REST API (GET /markets/{condition_id}) for each active market.
+          2. When closed=true and a token has winner=true, mark resolved in DB.
+          3. Update copy_pros.events.resolved_at if all sibling markets resolved.
+          4. Remove resolved markets from self.states (stops snapshot + stream).
+
+        NOTE: Gamma API's ?conditionIds= query is unreliable for short-duration
+        markets (e.g. eth-updown-5m) — it can match stale/wrong records. CLOB
+        REST is authoritative: it returns closed + per-token winner flags.
+        """
+        log.info("Resolution loop started.")
+        while True:
+            await asyncio.sleep(RESOLUTION_INTERVAL)
+            now = _now()
+
+            unresolved = [
+                (mid, state.condition_id)
+                for mid, state in self.states.items()
+            ]
+            if not unresolved:
+                continue
+
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    for market_id, condition_id in unresolved:
+                        r = await client.get(
+                            f"{CLOB_BASE}/markets/{condition_id}",
+                        )
+                        if r.status_code != 200:
+                            continue
+                        m = r.json()
+
+                        if not m.get("closed"):
+                            continue
+
+                        # CLOB tokens carry winner:true/false after settlement
+                        tokens = m.get("tokens", [])
+                        winning_token = next(
+                            (t for t in tokens if t.get("winner")), None
+                        )
+                        if not winning_token:
+                            continue  # closed but not yet settled
+
+                        winner = winning_token.get("outcome", "UNKNOWN")
+                        resolved_at = now
+
+                        log.info(
+                            f"Market resolved: {condition_id[:20]}… "
+                            f"winner={winner}  resolved_at={resolved_at.isoformat()}"
+                        )
+
+                        async with self.pool.acquire() as conn:
+                            await conn.execute("""
+                                UPDATE copy_pros.markets
+                                SET is_resolved     = true,
+                                    winning_outcome = $1,
+                                    resolved_at     = $2
+                                WHERE condition_id = $3
+                            """, winner, resolved_at, condition_id)
+
+                            # Stamp event.resolved_at if all its markets are resolved
+                            await conn.execute("""
+                                UPDATE copy_pros.events e
+                                SET resolved_at = $1
+                                WHERE e.id = (
+                                    SELECT event_id FROM copy_pros.markets
+                                    WHERE condition_id = $2
+                                )
+                                AND NOT EXISTS (
+                                    SELECT 1 FROM copy_pros.markets
+                                    WHERE event_id = e.id
+                                      AND is_resolved = false
+                                )
+                            """, resolved_at, condition_id)
+
+                        # Remove from active states — no more streaming needed
+                        self.states.pop(market_id, None)
+                        self.token_to_market = {
+                            tok: mid for tok, mid in self.token_to_market.items()
+                            if mid != market_id
+                        }
+                        log.info(f"Removed resolved market from stream. "
+                                 f"Remaining: {len(self.states)}")
+
+            except Exception as e:
+                log.error(f"Resolution loop error: {e}")
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -536,6 +630,7 @@ async def main() -> None:
         await asyncio.gather(
             streamer.ws_loop(),
             streamer.snapshot_loop(),
+            streamer.resolution_loop(),
         )
     except KeyboardInterrupt:
         log.info("Stopped by user.")
