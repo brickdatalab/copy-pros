@@ -1,37 +1,91 @@
 /**
  * Polymarket CLOB + Gamma API client
- * Uses L2 (API key) authentication for CLOB private endpoints.
+ * L2 auth implementation verified against py-clob-client source:
+ * https://github.com/Polymarket/py-clob-client/blob/main/py_clob_client/signing/hmac.py
+ * https://github.com/Polymarket/py-clob-client/blob/main/py_clob_client/headers/headers.py
  */
 
 const CLOB_BASE  = 'https://clob.polymarket.com';
 const GAMMA_BASE = 'https://gamma-api.polymarket.com';
 
+// The path signed in the HMAC — query params are NOT included in the signature.
+// Source: RequestArgs(method="GET", request_path=TRADES) where TRADES="/data/trades"
+const TRADES_PATH = '/data/trades';
+
 // ─── Auth ────────────────────────────────────────────────────────────────────
 
-async function buildL2Headers(method: string, path: string): Promise<Record<string, string>> {
-  const apiKey    = Deno.env.get('CLOB_API_KEY')!;
-  const secret    = Deno.env.get('CLOB_SECRET')!;
+/**
+ * Build L2 request headers per the actual py-clob-client spec.
+ *
+ * Headers (L2):
+ *   POLY_ADDRESS    — wallet address (signer.address())
+ *   POLY_SIGNATURE  — HMAC-SHA256 of (timestamp + method + requestPath), URL-safe base64
+ *   POLY_TIMESTAMP  — Unix seconds
+ *   POLY_API_KEY    — API key UUID (creds.api_key) — DISTINCT from POLY_ADDRESS
+ *   POLY_PASSPHRASE — API passphrase
+ *
+ * NOT included in L2: POLY_NONCE (that is L1 only).
+ *
+ * HMAC message: timestamp + method + requestPath  (NO nonce, NO query params)
+ * Secret decode: URL-safe base64  (base64.urlsafe_b64decode)
+ * Signature encode: URL-safe base64  (base64.urlsafe_b64encode)
+ *
+ * IMPORTANT — two env vars required:
+ *   CLOB_ADDRESS    — wallet address  → POLY_ADDRESS
+ *   CLOB_API_KEY    — API key UUID    → POLY_API_KEY
+ *   CLOB_SECRET     — URL-safe base64 HMAC secret
+ *   CLOB_PASS_PHRASE — passphrase
+ *
+ * If CLOB_ADDRESS is absent, falls back to CLOB_API_KEY for POLY_ADDRESS
+ * (handles legacy single-var setups where the wallet address was stored as CLOB_API_KEY).
+ */
+async function buildL2Headers(method: string, requestPath: string): Promise<Record<string, string>> {
+  const apiKey     = Deno.env.get('CLOB_API_KEY')!;
+  const secret     = Deno.env.get('CLOB_SECRET')!;
   const passphrase = Deno.env.get('CLOB_PASS_PHRASE')!;
+  // CLOB_ADDRESS is the wallet address for POLY_ADDRESS.
+  // Falls back to CLOB_API_KEY if not set (legacy config where wallet addr = CLOB_API_KEY).
+  const walletAddress = Deno.env.get('CLOB_ADDRESS') ?? apiKey;
 
-  const ts    = Math.floor(Date.now() / 1000);
-  const nonce = 0;
-  const msg   = `${ts}${nonce}${method}${path}`;
+  const ts = Math.floor(Date.now() / 1000);
 
-  // CLOB_SECRET is base64-encoded; decode before using as HMAC key
-  const rawSecret  = Uint8Array.from(atob(secret), (c) => c.charCodeAt(0));
-  const cryptoKey  = await crypto.subtle.importKey(
+  // HMAC message: timestamp + method + requestPath — NO nonce, NO query params.
+  // Source: message = str(timestamp) + str(method) + str(requestPath)
+  const msg = `${ts}${method}${requestPath}`;
+
+  // Secret is URL-safe base64 encoded. Must use urlsafe decode (- and _ variants).
+  // Source: base64_secret = base64.urlsafe_b64decode(secret)
+  const urlSafeB64ToBytes = (b64: string): Uint8Array => {
+    const standard = b64.replace(/-/g, '+').replace(/_/g, '/');
+    // Pad to multiple of 4
+    const padded = standard + '='.repeat((4 - standard.length % 4) % 4);
+    return Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
+  };
+
+  const rawSecret = urlSafeB64ToBytes(secret);
+  const cryptoKey = await crypto.subtle.importKey(
     'raw', rawSecret,
     { name: 'HMAC', hash: 'SHA-256' },
-    false, ['sign']
+    false, ['sign'],
   );
-  const sigBytes   = await crypto.subtle.sign('HMAC', cryptoKey, new TextEncoder().encode(msg));
-  const signature  = btoa(String.fromCharCode(...new Uint8Array(sigBytes)));
+  const sigBytes = await crypto.subtle.sign('HMAC', cryptoKey, new TextEncoder().encode(msg));
 
+  // Signature must be URL-safe base64 (- and _ instead of + and /).
+  // Source: base64.urlsafe_b64encode(h.digest()).decode("utf-8")
+  const bytesToUrlSafeB64 = (bytes: Uint8Array): string => {
+    const b64 = btoa(String.fromCharCode(...bytes));
+    return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  };
+
+  const signature = bytesToUrlSafeB64(new Uint8Array(sigBytes));
+
+  // L2 headers — no POLY_NONCE (that belongs to L1 only).
+  // Source: create_level_2_headers() in headers.py
   return {
-    'POLY_ADDRESS':    apiKey,
+    'POLY_ADDRESS':    walletAddress,
     'POLY_SIGNATURE':  signature,
     'POLY_TIMESTAMP':  String(ts),
-    'POLY_NONCE':      String(nonce),
+    'POLY_API_KEY':    apiKey,
     'POLY_PASSPHRASE': passphrase,
     'Content-Type':    'application/json',
   };
@@ -66,45 +120,38 @@ export interface MarketDetail {
 // ─── CLOB — fetch trades ──────────────────────────────────────────────────────
 
 /**
- * Fetch ALL trades for a maker address since `afterUnixSeconds`.
+ * Fetch ALL trades for a wallet address since `afterUnixSeconds`.
+ * Queries by maker_address only — taker_address is not a supported TradeParams field
+ * in the CLOB API (verified from py-clob-client TradeParams dataclass).
  * Handles pagination automatically via next_cursor.
- * Queries both maker_address and taker_address to capture all activity.
  */
 export async function fetchTradesForWallet(
   walletAddress: string,
   afterUnixSeconds: number,
 ): Promise<ClobTrade[]> {
-  const makerTrades  = await fetchTradesByParam('maker_address', walletAddress, afterUnixSeconds);
-  const takerTrades  = await fetchTradesByParam('taker_address', walletAddress, afterUnixSeconds);
-
-  // Merge and deduplicate by trade id
-  const seen  = new Set<string>();
-  const all: ClobTrade[] = [];
-  for (const trade of [...makerTrades, ...takerTrades]) {
-    if (!seen.has(trade.id)) {
-      seen.add(trade.id);
-      all.push(trade);
-    }
-  }
-  return all;
+  return fetchTradesByMakerAddress(walletAddress, afterUnixSeconds);
 }
 
-async function fetchTradesByParam(
-  param: 'maker_address' | 'taker_address',
+async function fetchTradesByMakerAddress(
   address: string,
   afterUnixSeconds: number,
 ): Promise<ClobTrade[]> {
   const trades: ClobTrade[] = [];
-  let   cursor: string | null = null;
+  let cursor: string | null = null;
 
   while (true) {
-    const path = buildTradePath(param, address, afterUnixSeconds, cursor);
-    const headers = await buildL2Headers('GET', path);
+    // Sign only the base path — query params are NOT part of the HMAC message.
+    // Source: RequestArgs(method="GET", request_path=TRADES) where TRADES="/data/trades"
+    const headers = await buildL2Headers('GET', TRADES_PATH);
 
-    const resp = await fetch(`${CLOB_BASE}${path}`, { headers });
+    // Build the full URL with query params (separate from signing).
+    const fullPath = buildTradeQueryPath(address, afterUnixSeconds, cursor);
+    const url = `${CLOB_BASE}${fullPath}`;
+
+    const resp = await fetch(url, { headers });
     if (!resp.ok) {
-      console.error(`CLOB ${param} ${resp.status}: ${await resp.text()}`);
-      break;
+      const errText = await resp.text();
+      throw new Error(`CLOB /data/trades ${resp.status} ${resp.statusText}: ${errText}`);
     }
 
     const json = await resp.json() as { data?: ClobTrade[]; next_cursor?: string };
@@ -119,16 +166,15 @@ async function fetchTradesByParam(
   return trades;
 }
 
-function buildTradePath(
-  param: string,
+function buildTradeQueryPath(
   address: string,
   after: number,
   cursor: string | null,
 ): string {
   const params = new URLSearchParams({
-    [param]: address.toLowerCase(),
-    after:   String(after),
-    limit:   '500',
+    maker_address: address.toLowerCase(),
+    after:         String(after),
+    limit:         '500',
   });
   if (cursor) params.set('next_cursor', cursor);
   return `/data/trades?${params}`;
@@ -171,7 +217,7 @@ export async function fetchMarketDetailsBatch(
     }
 
     // Event slug: first event in the events array, or groupSlug
-    const events   = m.events as Array<{ slug?: string }> | undefined;
+    const events    = m.events as Array<{ slug?: string }> | undefined;
     const eventSlug = events?.[0]?.slug ?? (m.groupSlug as string | null) ?? null;
 
     result.set(condId, {
