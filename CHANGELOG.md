@@ -4,7 +4,7 @@ All notable changes to `copy_pros` are documented here. Commits are listed newes
 
 ---
 
-## [pending] — 2026-02-25 — fix: market resolution loop + outcome constraint
+## [99514ea] — 2026-02-25 — fix: market resolution loop + outcome constraint
 
 **Why:** After the first live stream test, two bugs surfaced:
 

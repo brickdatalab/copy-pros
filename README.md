@@ -138,7 +138,7 @@ One row per unique market seen in activity. Seeded by `fetch-activity`, resolved
 | `market_slug` | `text` | |
 | `event_slug` | `text` | |
 | `question` | `text` | |
-| `winning_outcome` | `text` CHECK ('YES','NO') | null until resolved |
+| `winning_outcome` | `text` | null until resolved; stores verbatim outcome label (e.g. `'YES'`, `'Up'`, candidate name) |
 | `is_resolved` | `bool` DEFAULT false | |
 | `resolved_at` | `timestamptz` | |
 | `last_checked_at` | `timestamptz` | updated every resolve-outcomes run |
@@ -180,8 +180,9 @@ One row per YES/NO binary market within an event. Neg-risk events have multiple 
 | `token_id_no` | `text` NOT NULL | ERC-1155 NO token ID |
 | `is_neg_risk` | `bool` DEFAULT false | |
 | `is_resolved` | `bool` DEFAULT false | |
-| `winning_outcome` | `text` CHECK ('YES','NO') | null until resolved |
+| `winning_outcome` | `text` | null until resolved; verbatim from CLOB `tokens[].outcome` (e.g. `'Up'`, `'Down'`, `'YES'`, `'NO'`) |
 | `resolved_at` | `timestamptz` | used by purge policy |
+| `end_date` | `timestamptz` | market window close time; set from Gamma `endDate` on registration |
 | `created_at` | `timestamptz` | |
 
 ### `copy_pros.market_ticks`
@@ -276,6 +277,8 @@ Applied in order to Supabase project `cxvntzszdkyggjjenefn`.
 | 012 | `012_market_ticks.sql` | Creates market_ticks table with time+asset indexes |
 | 013 | `013_market_snapshots_indicators.sql` | Creates market_snapshots + indicators tables |
 | 014 | `014_purge_policy.sql` | pg_cron purge job: every 4h, deletes tick/snapshot/indicator data 48h after market resolution |
+| 015 | `015_markets_end_date.sql` | Adds `end_date timestamptz` to `copy_pros.markets`; backfills from slug-embedded unix timestamp + 300s |
+| 016 | `016_relax_winning_outcome_check.sql` | Drops `winning_outcome CHECK ('YES','NO')` — CLOB outcome labels are arbitrary strings |
 
 ---
 
@@ -373,7 +376,9 @@ python scripts/stream_market.py
 **Key classes:**
 - `OrderBook` — `apply_snapshot(bids, asks)` for full book reset, `apply_change(changes)` for diffs. Properties: `best_bid`, `best_ask`, `mid`, `spread`, `bid_depth`, `ask_depth`, `imbalance`
 - `MarketState` — holds YES+NO `OrderBook`s, `deque`-based rolling trade windows, `spread_hist`, `mid_hist`. Methods: `vwap(secs)`, `volume(secs)`, `spread_momentum()`, `mid_momentum(secs)`, `compute_signal()`
-- `MarketStreamer` — `ws_loop()` (WebSocket reader), `snapshot_loop()` (1s aggregation writer), asyncpg pool (`min_size=2, max_size=8`)
+- `MarketStreamer` — `ws_loop()` (WebSocket reader), `snapshot_loop()` (1s aggregation writer), `resolution_loop()` (polls CLOB REST every 30s; marks markets resolved, removes them from active state), asyncpg pool (`min_size=2, max_size=8`)
+
+**Resolution loop — why CLOB REST, not Gamma:** `GET https://clob.polymarket.com/markets/{condition_id}` is authoritative. The Gamma `?conditionIds=` query is unreliable for short-duration markets — it hash-matches stale records from old markets. CLOB returns `closed: true` + `tokens[*].winner: true/false` after settlement; the winning token's `outcome` string is stored as `winning_outcome` verbatim.
 
 ### `scripts/requirements_stream.txt`
 ```
@@ -523,7 +528,7 @@ LIMIT 1;
 - **Profiles tracked:** 1 — `0x63ce342161250d705dc0b16df89036c8e5f9ba9a`
 - **pg_cron jobs active:** `fetch-activity-every-1min`, `resolve-outcomes-15min`, `purge-market-data` (every 4h)
 - **Edge Functions:** `fetch-activity` v3, `resolve-outcomes` v1 — both JWT-verified, ACTIVE
-- **All 14 migrations applied** to project `cxvntzszdkyggjjenefn`
+- **All 16 migrations applied** to project `cxvntzszdkyggjjenefn`
 - **Activity collection status:** Blocked — `CLOB_API_KEY` secret is set to wallet address, not UUID API key. See credential issue in fetch-activity section above.
 
 ---
@@ -566,5 +571,7 @@ copy-pros/
         ├── 011_market_data_tables.sql
         ├── 012_market_ticks.sql
         ├── 013_market_snapshots_indicators.sql
-        └── 014_purge_policy.sql
+        ├── 014_purge_policy.sql
+        ├── 015_markets_end_date.sql
+        └── 016_relax_winning_outcome_check.sql
 ```
