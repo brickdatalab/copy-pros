@@ -1,0 +1,7 @@
+# Requirements for register_event.py and stream_market.py
+# Install: pip install -r scripts/requirements_stream.txt
+
+asyncpg>=0.29.0
+websockets>=12.0
+httpx>=0.27.0
+python-dotenv>=1.0.0
