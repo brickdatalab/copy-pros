@@ -37,6 +37,7 @@ The bot is designed around one question per event: `UP` or `DOWN`. It places **l
 - Applies entry gating + risk checks before any order submission.
 - Tracks runs, decisions, orders, and runtime events asynchronously to Supabase.
 - Emits structured reason codes for entries/exits and run analytics.
+- Persists `entry_signal_snapshot` on orders so each filled/submitted position can be traced to exact trigger values.
 
 ## Architecture
 
@@ -107,7 +108,11 @@ Polymarket WS (book, price_change, last_trade_price)
 - `price_change`
   - Uses `changes` deltas to mutate local book levels.
 - `last_trade_price`
-  - Uses `price` and `size` to append trade samples for VWAP windows.
+  - Uses `price` and `size` to append trade samples for VWAP/flow windows.
+  - Classifies aggressor side using top-of-book at ingest time:
+    - `+1` if `price >= ask * (1 - TRADE_SIDE_TOLERANCE)`
+    - `-1` if `price <= bid * (1 + TRADE_SIDE_TOLERANCE)`
+    - `0` otherwise (unknown/inside spread)
   - Current implementation records trade samples from the `UP` token stream.
 
 ## Indicators Tracked
@@ -127,6 +132,11 @@ Computed in `trader/engine/indicators/__init__.py` from rolling windows in `trad
 - `vwap_delta_15s`: current `vwap_30s` minus value 15s ago.
 - `mid_delta_15s`: current `mid_price` minus value 15s ago.
 - `momentum_delta_5s`: current `mid_momentum_30s` minus value 5s ago.
+- `ew_delta_imbalance`: exponentially weighted signed volume delta ratio in `[-1, 1]`.
+- `flow_toxicity`: VPIN-lite rolling toxicity score in `[0, 1]`.
+- `large_trade_ratio`: 30s large-volume ratio in `[0, 1]`.
+- `unknown_trade_ratio`: 30s unknown-side trade ratio in `[0, 1]`.
+- `flow_weight_preset`: active decision weight preset label (`baseline` or `flow_v1`).
 
 Rolling history windows are kept to 300 seconds and pruned continuously.
 
@@ -147,12 +157,27 @@ Derived:
 
 - `price_vs_vwap = (mid_price - vwap_1m) / vwap_1m`
 
-Scores:
+Weight presets:
 
-```text
-up_score   = 1.1*imbalance + 2.2*mid_momentum + 0.6*(-spread_momentum) + 1.5*price_vs_vwap
-down_score = 1.1*(-imbalance) + 2.2*(-mid_momentum) + 0.6*(-spread_momentum) + 1.5*(-price_vs_vwap)
-```
+- `baseline`: legacy 4-indicator weights (no flow contribution).
+- `flow_v1` / `v1` (default): flow-aware weights:
+  - `w_mid_momentum=1.4`
+  - `w_price_vs_vwap=0.7`
+  - `w_order_imbalance=0.6`
+  - `w_spread_momentum=0.5`
+  - `w_ew_delta=2.2`
+  - `w_toxicity=0.6`
+  - `w_large_ratio=0.4`
+
+`flow_v1` scoring adds to base directional score:
+
+- directional signed-delta term (`ew_delta_imbalance`)
+- toxicity amplifier aligned with delta direction
+- large-trade ratio confirmation aligned with delta direction
+
+Unknown-side safeguard:
+
+- If `unknown_trade_ratio > FLOW_UNKNOWN_RATIO_CUTOFF` (default `0.35`), signed delta is scaled by `FLOW_UNKNOWN_DELTA_SCALE` (default `0.5`) before flow scoring.
 
 Time dampening:
 
@@ -178,6 +203,15 @@ Entry reason codes:
 
 - `momentum_alignment_entry`
 - `bullish_reversal_setup`
+- `flow_confirmed_entry` (runtime event when flow materially boosts entry confidence)
+- `entry_blocked_flow_against_direction` (runtime event when hard flow gate blocks entry)
+
+### Flow-against-direction hard gate
+
+Before regular entry policy checks, entries are blocked when tape strongly opposes direction:
+
+- Block `BUY_UP` if `ew_delta_imbalance < -FLOW_BLOCK_DELTA_THRESHOLD` (default `-0.10`)
+- Block `BUY_DOWN` if `ew_delta_imbalance > +FLOW_BLOCK_DELTA_THRESHOLD` (default `+0.10`)
 
 ## Fill vs No-Fill Decision Tree
 
@@ -189,7 +223,9 @@ flowchart TD
     D --> E{"Decision is HOLD?"}
     E -- Yes --> Z1["No order intent emitted"]
     E -- No --> F["Pick side and current ask price"]
-    F --> G{"Signal streak >= SIGNAL_PERSIST_TICKS?"}
+    F --> F1{"Flow agrees with side?"}
+    F1 -- No --> Z0["Reject: entry_blocked_flow_against_direction"]
+    F1 -- Yes --> G{"Signal streak >= SIGNAL_PERSIST_TICKS?"}
     G -- No --> Z2["Reject: signal_not_persistent"]
     G -- Yes --> H{"Entry cooldown elapsed?"}
     H -- No --> Z3["Reject: entry_cooldown"]
@@ -251,6 +287,17 @@ Default constraints:
 - `ALLOW_BOTH_SIDES=true`
 - `COUNT_OPEN_ORDERS_IN_EXPOSURE=true`
 - `ENABLE_CONVEXITY_BUDGET_RESERVATION=false` (default OFF)
+- `ENABLE_FLOW_SIGNALS=true`
+- `FLOW_WEIGHT_PRESET=v1`
+- `FLOW_BLOCK_DELTA_THRESHOLD=0.10`
+- `FLOW_UNKNOWN_RATIO_CUTOFF=0.35`
+- `FLOW_UNKNOWN_DELTA_SCALE=0.5`
+- `FLOW_EW_HALF_LIFE_SECONDS=15`
+- `VPIN_BUCKET_VOLUME=300`
+- `VPIN_NUM_BUCKETS=10`
+- `LARGE_TRADE_SIZE=75`
+- `LARGE_RATIO_WINDOW_SECONDS=30`
+- `TRADE_SIDE_TOLERANCE=0.001`
 
 Optional convexity reservation throttle (only when enabled):
 
@@ -289,7 +336,10 @@ Cadence defaults:
   - realized PnL (total and per market)
   - win rate, average win, average loss, profit factor
   - reason-code grouped entry counts and attributed PnL
+  - flow profile at entry (winner vs loser averages for `ew_delta_imbalance` and `flow_toxicity`)
+  - count of entries blocked by flow-against-direction gate
   - open orders/open positions and per-side budget usage metrics
+  - per-order `entry_signal_snapshot` payload (confidence/edge, core indicators, flow indicators, streak, remaining time, entry price)
 
 ## Local Playground (localhost UI)
 

@@ -16,7 +16,7 @@ from trader.adapters.polymarket.rest_client import (
     fetch_winning_side,
 )
 from trader.adapters.polymarket.trading_client import TradingClient
-from trader.adapters.polymarket.ws_client import stream_market_events
+from trader.adapters.polymarket.ws_client import classify_trade_side, stream_market_events
 from trader.adapters.supabase.writer import BufferedSupabaseWriter
 from trader.config import TraderConfig
 from trader.engine.indicators import IndicatorEngine, IndicatorValue
@@ -47,6 +47,11 @@ _INDICATOR_ACTIVITY_KEYS: tuple[str, ...] = (
     "vwap_delta_15s",
     "mid_delta_15s",
     "momentum_delta_5s",
+    "ew_delta_imbalance",
+    "flow_toxicity",
+    "large_trade_ratio",
+    "unknown_trade_ratio",
+    "flow_weight_preset",
 )
 
 
@@ -73,6 +78,7 @@ def empty_runtime_activity_snapshot() -> dict[str, Any]:
         "last_order_shares": None,
         "last_order_status": None,
         "last_order_ts": None,
+        "flow_blocked_entries_count": 0,
         "filled_up_exposure_usdc": 0.0,
         "filled_down_exposure_usdc": 0.0,
         "open_up_exposure_usdc": 0.0,
@@ -92,6 +98,7 @@ class OpenOrder:
     shares: float
     wager_usdc: float
     reason_code: str | None
+    entry_signal_snapshot: dict[str, IndicatorValue] | None
     created_at: float
 
 
@@ -105,6 +112,12 @@ class EventOrderRecord:
     status: str
     ts: str
     reason_code: str | None = None
+    entry_ew_delta_imbalance: float | None = None
+    entry_flow_toxicity: float | None = None
+    entry_large_trade_ratio: float | None = None
+    entry_unknown_trade_ratio: float | None = None
+    entry_flow_weight_preset: str | None = None
+    entry_signal_snapshot: dict[str, IndicatorValue] | None = None
 
 
 @dataclass(frozen=True)
@@ -121,6 +134,7 @@ class EventRunResult:
     total_decisions: int
     total_orders: int
     total_fills: int
+    flow_blocked_entries_count: int
     up_notional: float
     down_notional: float
     orders: list[EventOrderRecord]
@@ -167,6 +181,8 @@ class BotRuntime:
     last_order_shares: float | None = None
     last_order_status: str | None = None
     last_order_ts: float | None = None
+    flow_weight_preset_used: str = "flow_v1"
+    flow_blocked_entries_count: int = 0
 
     def activity_snapshot(self) -> dict[str, Any]:
         snapshot = empty_runtime_activity_snapshot()
@@ -193,6 +209,7 @@ class BotRuntime:
                 "last_order_shares": self.last_order_shares,
                 "last_order_status": self.last_order_status,
                 "last_order_ts": self.last_order_ts,
+                "flow_blocked_entries_count": self.flow_blocked_entries_count,
                 "filled_up_exposure_usdc": self.exposure_filled_usdc["UP"],
                 "filled_down_exposure_usdc": self.exposure_filled_usdc["DOWN"],
                 "open_up_exposure_usdc": self.exposure_open_usdc["UP"],
@@ -208,15 +225,29 @@ class BotRuntime:
         return snapshot
 
     async def run(self) -> EventRunResult | None:
+        flow_weight_preset = "flow_v1" if self.cfg.flow_weight_preset == "v1" else self.cfg.flow_weight_preset
+        self.flow_weight_preset_used = flow_weight_preset
         self.decision_policy = DecisionPolicy(
             min_confidence=self.cfg.min_signal_confidence,
             min_edge=self.cfg.min_signal_edge,
+            enable_flow_signals=self.cfg.enable_flow_signals,
+            flow_weight_preset=flow_weight_preset,
+            flow_unknown_ratio_cutoff=self.cfg.flow_unknown_ratio_cutoff,
+            flow_unknown_delta_scale=self.cfg.flow_unknown_delta_scale,
         )
         self.indicator_engine = IndicatorEngine(
             vwap_up_delta_15s=self.cfg.vwap_up_delta_15s,
             mid_flat_delta_15s=self.cfg.mid_flat_delta_15s,
             momentum_accel_5s=self.cfg.momentum_accel_5s,
             enable_reversal_imminent=self.cfg.enable_reversal_imminent,
+            flow_weight_preset=flow_weight_preset,
+        )
+        self.market_state.configure_flow(
+            ew_half_life_seconds=self.cfg.flow_ew_half_life_seconds,
+            vpin_bucket_volume=self.cfg.flow_vpin_bucket_volume,
+            vpin_num_buckets=self.cfg.flow_vpin_num_buckets,
+            large_trade_size=self.cfg.flow_large_trade_size,
+            large_ratio_window_seconds=self.cfg.flow_large_ratio_window_seconds,
         )
         ctx = await fetch_event_market_context(self.cfg.poly_event_input)
         now_ts = int(time.time())
@@ -323,6 +354,7 @@ class BotRuntime:
                     total_decisions=self.decisions_count,
                     total_orders=self.orders_count,
                     total_fills=self.fills_count,
+                    flow_blocked_entries_count=self.flow_blocked_entries_count,
                     up_notional=self.exposure_filled_usdc["UP"],
                     down_notional=self.exposure_filled_usdc["DOWN"],
                     orders=list(self.order_records),
@@ -355,7 +387,20 @@ class BotRuntime:
                         price = _to_float(msg.get("price"))
                         size = _to_float(msg.get("size"))
                         if price is not None and size is not None and price > 0 and size > 0:
-                            self.market_state.add_trade(price=price, size=size, ts=datetime.now(tz=timezone.utc))
+                            bid = self.market_state.book_yes.best_bid
+                            ask = self.market_state.book_yes.best_ask
+                            side = classify_trade_side(
+                                price=price,
+                                best_bid=bid if bid > 0 else None,
+                                best_ask=ask if ask > 0 else None,
+                                tolerance=self.cfg.trade_side_tolerance,
+                            )
+                            self.market_state.add_trade(
+                                price=price,
+                                size=size,
+                                side=side,
+                                ts=datetime.now(tz=timezone.utc),
+                            )
 
             self.ws_ticks += 1
             self.ws_last_event_type = event_type
@@ -438,6 +483,8 @@ class BotRuntime:
                         "effective_min_confidence": decision.effective_min_confidence,
                         "threshold_relaxed": decision.threshold_relaxed,
                         "reversal_imminent": indicators.get("reversal_imminent") is True,
+                        "flow_weight_preset": self.flow_weight_preset_used,
+                        "flow_boost": decision.flow_boost,
                     },
                     "indicator_snapshot": indicators,
                     "risk_snapshot": {
@@ -455,7 +502,36 @@ class BotRuntime:
 
             now_ms = int(time.time() * 1000)
             reversal_imminent = indicators.get("reversal_imminent") is True
+            ew_delta_imbalance = float(indicators.get("ew_delta_imbalance") or 0.0)
+            common_entry_signal_snapshot = _build_entry_signal_snapshot(
+                indicators=indicators,
+                confidence=decision.confidence,
+                edge=decision.edge,
+                reason_code=decision.reason_code,
+                effective_min_confidence=decision.effective_min_confidence,
+                threshold_relaxed=decision.threshold_relaxed,
+                flow_boost=decision.flow_boost,
+                streak=streak,
+                remaining_sec=remaining_sec,
+            )
             if decision.action == DecisionAction.BUY_UP and up_ask > 0:
+                if _flow_blocks_entry(
+                    action=decision.action,
+                    ew_delta_imbalance=ew_delta_imbalance,
+                    threshold=self.cfg.flow_block_delta_threshold,
+                ):
+                    self.flow_blocked_entries_count += 1
+                    await self.writer.enqueue_runtime_event(
+                        run_id,
+                        "warn",
+                        "entry_blocked",
+                        {
+                            "reason_code": "entry_blocked_flow_against_direction",
+                            "side": "UP",
+                            "ew_delta_imbalance": ew_delta_imbalance,
+                        },
+                    )
+                    continue
                 gate = evaluate_entry_policy(
                     EntryPolicyInput(
                         side="UP",
@@ -487,8 +563,32 @@ class BotRuntime:
                             "confidence": decision.confidence,
                             "reason_code": decision.reason_code,
                             "reversal_imminent": reversal_imminent,
+                            "entry_ew_delta_imbalance": float(indicators.get("ew_delta_imbalance") or 0.0),
+                            "entry_flow_toxicity": float(indicators.get("flow_toxicity") or 0.0),
+                            "entry_unknown_trade_ratio": float(indicators.get("unknown_trade_ratio") or 0.0),
+                            "entry_large_trade_ratio": float(indicators.get("large_trade_ratio") or 0.0),
+                            "entry_flow_weight_preset": str(
+                                indicators.get("flow_weight_preset") or self.flow_weight_preset_used
+                            ),
+                            "entry_signal_snapshot": {
+                                **common_entry_signal_snapshot,
+                                "action": "BUY_UP",
+                                "entry_side": "UP",
+                                "entry_price": round(up_ask, 6),
+                            },
                         }
                     )
+                    if decision.flow_boost > 0:
+                        await self.writer.enqueue_runtime_event(
+                            run_id,
+                            "info",
+                            "flow_confirmed_entry",
+                            {
+                                "reason_code": "flow_confirmed_entry",
+                                "side": "UP",
+                                "flow_boost": decision.flow_boost,
+                            },
+                        )
                 elif reversal_imminent:
                     # Reversal observability: emit explicit block reasons without
                     # changing baseline entry filters.
@@ -503,6 +603,23 @@ class BotRuntime:
                         },
                     )
             elif decision.action == DecisionAction.BUY_DOWN and down_ask > 0:
+                if _flow_blocks_entry(
+                    action=decision.action,
+                    ew_delta_imbalance=ew_delta_imbalance,
+                    threshold=self.cfg.flow_block_delta_threshold,
+                ):
+                    self.flow_blocked_entries_count += 1
+                    await self.writer.enqueue_runtime_event(
+                        run_id,
+                        "warn",
+                        "entry_blocked",
+                        {
+                            "reason_code": "entry_blocked_flow_against_direction",
+                            "side": "DOWN",
+                            "ew_delta_imbalance": ew_delta_imbalance,
+                        },
+                    )
+                    continue
                 gate = evaluate_entry_policy(
                     EntryPolicyInput(
                         side="DOWN",
@@ -534,8 +651,32 @@ class BotRuntime:
                             "confidence": decision.confidence,
                             "reason_code": decision.reason_code,
                             "reversal_imminent": reversal_imminent,
+                            "entry_ew_delta_imbalance": float(indicators.get("ew_delta_imbalance") or 0.0),
+                            "entry_flow_toxicity": float(indicators.get("flow_toxicity") or 0.0),
+                            "entry_unknown_trade_ratio": float(indicators.get("unknown_trade_ratio") or 0.0),
+                            "entry_large_trade_ratio": float(indicators.get("large_trade_ratio") or 0.0),
+                            "entry_flow_weight_preset": str(
+                                indicators.get("flow_weight_preset") or self.flow_weight_preset_used
+                            ),
+                            "entry_signal_snapshot": {
+                                **common_entry_signal_snapshot,
+                                "action": "BUY_DOWN",
+                                "entry_side": "DOWN",
+                                "entry_price": round(down_ask, 6),
+                            },
                         }
                     )
+                    if decision.flow_boost > 0:
+                        await self.writer.enqueue_runtime_event(
+                            run_id,
+                            "info",
+                            "flow_confirmed_entry",
+                            {
+                                "reason_code": "flow_confirmed_entry",
+                                "side": "DOWN",
+                                "flow_boost": decision.flow_boost,
+                            },
+                        )
 
             if self.cfg.enable_take_profit and remaining_sec >= self.cfg.take_profit_min_remaining_sec:
                 if self.exposure_filled_usdc["UP"] > 0 and up_bid >= self.cfg.take_profit_trigger_price:
@@ -572,6 +713,17 @@ class BotRuntime:
                 confidence = float(intent["confidence"])
                 reversal_imminent = bool(intent.get("reversal_imminent", False))
                 reason_code = str(intent.get("reason_code", ""))
+                entry_ew_delta_imbalance = _to_float(intent.get("entry_ew_delta_imbalance"))
+                entry_flow_toxicity = _to_float(intent.get("entry_flow_toxicity"))
+                entry_large_trade_ratio = _to_float(intent.get("entry_large_trade_ratio"))
+                entry_unknown_trade_ratio = _to_float(intent.get("entry_unknown_trade_ratio"))
+                entry_flow_weight_preset = str(intent.get("entry_flow_weight_preset", "")).strip() or None
+                raw_entry_signal_snapshot = intent.get("entry_signal_snapshot")
+                entry_signal_snapshot = (
+                    dict(raw_entry_signal_snapshot)
+                    if isinstance(raw_entry_signal_snapshot, dict)
+                    else None
+                )
 
                 current_exposure = self.exposure_filled_usdc[side]
                 if self.cfg.count_open_orders_in_exposure:
@@ -688,6 +840,12 @@ class BotRuntime:
                         wager_usdc=size.wager_usdc,
                         reason_code=reason_code,
                         trading_client=trading_client,
+                        entry_ew_delta_imbalance=entry_ew_delta_imbalance,
+                        entry_flow_toxicity=entry_flow_toxicity,
+                        entry_large_trade_ratio=entry_large_trade_ratio,
+                        entry_unknown_trade_ratio=entry_unknown_trade_ratio,
+                        entry_flow_weight_preset=entry_flow_weight_preset,
+                        entry_signal_snapshot=entry_signal_snapshot,
                     )
                 else:
                     if self.exposure_filled_usdc[side] <= 0:
@@ -708,6 +866,12 @@ class BotRuntime:
                         reason_code=reason_code or "take_profit_95c_discipline",
                         trading_client=trading_client,
                         is_sell=True,
+                        entry_ew_delta_imbalance=entry_ew_delta_imbalance,
+                        entry_flow_toxicity=entry_flow_toxicity,
+                        entry_large_trade_ratio=entry_large_trade_ratio,
+                        entry_unknown_trade_ratio=entry_unknown_trade_ratio,
+                        entry_flow_weight_preset=entry_flow_weight_preset,
+                        entry_signal_snapshot=entry_signal_snapshot,
                     )
 
             # Cancel stale open orders when reversal is strong.
@@ -772,6 +936,12 @@ class BotRuntime:
         reason_code: str,
         trading_client: TradingClient,
         is_sell: bool = False,
+        entry_ew_delta_imbalance: float | None = None,
+        entry_flow_toxicity: float | None = None,
+        entry_large_trade_ratio: float | None = None,
+        entry_unknown_trade_ratio: float | None = None,
+        entry_flow_weight_preset: str | None = None,
+        entry_signal_snapshot: dict[str, IndicatorValue] | None = None,
     ) -> None:
         self.orders_count += 1
         action_label = "SELL_UP" if (is_sell and side == "UP") else (
@@ -803,7 +973,17 @@ class BotRuntime:
                     "shares": payload["shares"],
                     "wager_usdc": wager_usdc,
                     "status": "filled",
-                    "metadata": {"mode": "dry_run", "action": action, "reason_code": reason_code},
+                    "metadata": {
+                        "mode": "dry_run",
+                        "action": action,
+                        "reason_code": reason_code,
+                        "entry_ew_delta_imbalance": entry_ew_delta_imbalance,
+                        "entry_flow_toxicity": entry_flow_toxicity,
+                        "entry_large_trade_ratio": entry_large_trade_ratio,
+                        "entry_unknown_trade_ratio": entry_unknown_trade_ratio,
+                        "entry_flow_weight_preset": entry_flow_weight_preset,
+                        "entry_signal_snapshot": entry_signal_snapshot,
+                    },
                 },
             )
             self.order_records.append(
@@ -816,6 +996,12 @@ class BotRuntime:
                     status="filled",
                     ts=datetime.now(tz=timezone.utc).isoformat(),
                     reason_code=reason_code,
+                    entry_ew_delta_imbalance=entry_ew_delta_imbalance,
+                    entry_flow_toxicity=entry_flow_toxicity,
+                    entry_large_trade_ratio=entry_large_trade_ratio,
+                    entry_unknown_trade_ratio=entry_unknown_trade_ratio,
+                    entry_flow_weight_preset=entry_flow_weight_preset,
+                    entry_signal_snapshot=entry_signal_snapshot,
                 )
             )
             self._record_order_activity(
@@ -861,6 +1047,7 @@ class BotRuntime:
                 shares=float(payload["shares"]),
                 wager_usdc=wager_usdc,
                 reason_code=reason_code,
+                entry_signal_snapshot=entry_signal_snapshot,
                 created_at=time.time(),
             )
 
@@ -877,7 +1064,16 @@ class BotRuntime:
                 "shares": payload["shares"],
                 "wager_usdc": wager_usdc,
                 "status": "submitted",
-                "metadata": {"exchange_resp": exchange_resp, "reason_code": reason_code},
+                "metadata": {
+                    "exchange_resp": exchange_resp,
+                    "reason_code": reason_code,
+                    "entry_ew_delta_imbalance": entry_ew_delta_imbalance,
+                    "entry_flow_toxicity": entry_flow_toxicity,
+                    "entry_large_trade_ratio": entry_large_trade_ratio,
+                    "entry_unknown_trade_ratio": entry_unknown_trade_ratio,
+                    "entry_flow_weight_preset": entry_flow_weight_preset,
+                    "entry_signal_snapshot": entry_signal_snapshot,
+                },
             },
         )
         self.order_records.append(
@@ -890,6 +1086,12 @@ class BotRuntime:
                 status="submitted",
                 ts=datetime.now(tz=timezone.utc).isoformat(),
                 reason_code=reason_code,
+                entry_ew_delta_imbalance=entry_ew_delta_imbalance,
+                entry_flow_toxicity=entry_flow_toxicity,
+                entry_large_trade_ratio=entry_large_trade_ratio,
+                entry_unknown_trade_ratio=entry_unknown_trade_ratio,
+                entry_flow_weight_preset=entry_flow_weight_preset,
+                entry_signal_snapshot=entry_signal_snapshot,
             )
         )
         self._record_order_activity(
@@ -937,6 +1139,7 @@ class BotRuntime:
                         "source_status": status,
                         "phase": "reconcile",
                         "reason_code": open_order.reason_code,
+                        "entry_signal_snapshot": open_order.entry_signal_snapshot,
                     },
                 },
             )
@@ -950,6 +1153,7 @@ class BotRuntime:
                     status="filled",
                     ts=datetime.now(tz=timezone.utc).isoformat(),
                     reason_code=open_order.reason_code,
+                    entry_signal_snapshot=open_order.entry_signal_snapshot,
                 )
             )
             self._record_order_activity(
@@ -1029,9 +1233,64 @@ def _compact_indicator_snapshot(indicators: dict[str, IndicatorValue]) -> dict[s
         if isinstance(raw, bool):
             compact[key] = raw
             continue
+        if isinstance(raw, str):
+            compact[key] = raw
+            continue
         value = _to_float(raw)
         compact[key] = None if value is None else round(value, 6)
     return compact
+
+
+def _build_entry_signal_snapshot(
+    *,
+    indicators: dict[str, IndicatorValue],
+    confidence: float,
+    edge: float,
+    reason_code: str,
+    effective_min_confidence: float,
+    threshold_relaxed: bool,
+    flow_boost: float,
+    streak: int,
+    remaining_sec: int,
+) -> dict[str, IndicatorValue]:
+    mid_price = _to_float(indicators.get("mid_price"))
+    vwap_1m = _to_float(indicators.get("vwap_1m"))
+    price_vs_vwap: float | None = None
+    if mid_price is not None and vwap_1m is not None and vwap_1m > 0:
+        price_vs_vwap = (mid_price - vwap_1m) / vwap_1m
+
+    return {
+        "confidence": round(confidence, 6),
+        "edge": round(edge, 6),
+        "reason_code": reason_code,
+        "effective_min_confidence": round(effective_min_confidence, 6),
+        "threshold_relaxed": threshold_relaxed,
+        "flow_boost": round(flow_boost, 6),
+        "remaining_sec": float(remaining_sec),
+        "signal_streak": float(streak),
+        "mid_momentum_30s": _to_float(indicators.get("mid_momentum_30s")),
+        "price_vs_vwap": price_vs_vwap,
+        "order_imbalance": _to_float(indicators.get("order_imbalance")),
+        "spread_momentum_30s": _to_float(indicators.get("spread_momentum_30s")),
+        "ew_delta_imbalance": _to_float(indicators.get("ew_delta_imbalance")),
+        "flow_toxicity": _to_float(indicators.get("flow_toxicity")),
+        "large_trade_ratio": _to_float(indicators.get("large_trade_ratio")),
+        "unknown_trade_ratio": _to_float(indicators.get("unknown_trade_ratio")),
+        "reversal_imminent": indicators.get("reversal_imminent") is True,
+        "flow_weight_preset": (
+            str(indicators["flow_weight_preset"])
+            if isinstance(indicators.get("flow_weight_preset"), str)
+            else None
+        ),
+    }
+
+
+def _flow_blocks_entry(action: DecisionAction, ew_delta_imbalance: float, threshold: float) -> bool:
+    if action == DecisionAction.BUY_UP:
+        return ew_delta_imbalance < (-threshold)
+    if action == DecisionAction.BUY_DOWN:
+        return ew_delta_imbalance > threshold
+    return False
 
 
 def _map_reversal_block_reason(reason: str) -> str:

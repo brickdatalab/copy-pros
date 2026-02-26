@@ -17,6 +17,17 @@ def test_config_loads_default_constraints(monkeypatch: pytest.MonkeyPatch) -> No
     assert cfg.max_entry_price == 0.80
     assert cfg.min_signal_confidence == 0.52
     assert cfg.min_signal_edge == 0.10
+    assert cfg.enable_flow_signals is True
+    assert cfg.flow_weight_preset == "v1"
+    assert cfg.flow_block_delta_threshold == 0.10
+    assert cfg.flow_unknown_ratio_cutoff == 0.35
+    assert cfg.flow_unknown_delta_scale == 0.5
+    assert cfg.flow_ew_half_life_seconds == 15.0
+    assert cfg.flow_vpin_bucket_volume == 300.0
+    assert cfg.flow_vpin_num_buckets == 10
+    assert cfg.flow_large_trade_size == 75.0
+    assert cfg.flow_large_ratio_window_seconds == 30
+    assert cfg.trade_side_tolerance == 0.001
     assert cfg.enable_reversal_imminent is True
     assert cfg.vwap_up_delta_15s == 0.003
     assert cfg.mid_flat_delta_15s == 0.001

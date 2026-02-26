@@ -13,6 +13,17 @@ class TraderConfig:
     max_entry_price: float = 0.80
     min_signal_confidence: float = 0.52
     min_signal_edge: float = 0.10
+    enable_flow_signals: bool = True
+    flow_weight_preset: str = "v1"
+    flow_block_delta_threshold: float = 0.10
+    flow_unknown_ratio_cutoff: float = 0.35
+    flow_unknown_delta_scale: float = 0.5
+    flow_ew_half_life_seconds: float = 15.0
+    flow_vpin_bucket_volume: float = 300.0
+    flow_vpin_num_buckets: int = 10
+    flow_large_trade_size: float = 75.0
+    flow_large_ratio_window_seconds: int = 30
+    trade_side_tolerance: float = 0.001
     enable_reversal_imminent: bool = True
     vwap_up_delta_15s: float = 0.003
     mid_flat_delta_15s: float = 0.001
@@ -76,6 +87,17 @@ def load_config() -> TraderConfig:
         max_entry_price=_env_float("MAX_ENTRY_PRICE", 0.80),
         min_signal_confidence=_env_float("MIN_SIGNAL_CONFIDENCE", 0.52),
         min_signal_edge=_env_float("MIN_SIGNAL_EDGE", 0.10),
+        enable_flow_signals=_env_bool("ENABLE_FLOW_SIGNALS", True),
+        flow_weight_preset=os.getenv("FLOW_WEIGHT_PRESET", "v1"),
+        flow_block_delta_threshold=_env_float("FLOW_BLOCK_DELTA_THRESHOLD", 0.10),
+        flow_unknown_ratio_cutoff=_env_float("FLOW_UNKNOWN_RATIO_CUTOFF", 0.35),
+        flow_unknown_delta_scale=_env_float("FLOW_UNKNOWN_DELTA_SCALE", 0.5),
+        flow_ew_half_life_seconds=_env_float("FLOW_EW_HALF_LIFE_SECONDS", 15.0),
+        flow_vpin_bucket_volume=_env_float("VPIN_BUCKET_VOLUME", 300.0),
+        flow_vpin_num_buckets=_env_int("VPIN_NUM_BUCKETS", 10),
+        flow_large_trade_size=_env_float("LARGE_TRADE_SIZE", 75.0),
+        flow_large_ratio_window_seconds=_env_int("LARGE_RATIO_WINDOW_SECONDS", 30),
+        trade_side_tolerance=_env_float("TRADE_SIDE_TOLERANCE", 0.001),
         enable_reversal_imminent=_env_bool("ENABLE_REVERSAL_IMMINENT", True),
         vwap_up_delta_15s=_env_float("VWAP_UP_DELTA_15S", 0.003),
         mid_flat_delta_15s=_env_float("MID_FLAT_DELTA_15S", 0.001),
@@ -106,5 +128,7 @@ def load_config() -> TraderConfig:
 
     if cfg.bot_mode not in {"live", "dry_run"}:
         raise ValueError("BOT_MODE must be 'live' or 'dry_run'")
+    if cfg.flow_weight_preset not in {"baseline", "flow_v1", "v1"}:
+        raise ValueError("FLOW_WEIGHT_PRESET must be one of: baseline, flow_v1, v1")
 
     return cfg
