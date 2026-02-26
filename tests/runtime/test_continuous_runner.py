@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+
 from trader.config import TraderConfig
+from trader.runtime import continuous_runner
 from trader.runtime.continuous_runner import (
     ContinuousRunner,
     ContinuousRunnerConfig,
@@ -220,3 +223,30 @@ def test_runner_snapshot_includes_earnings_totals_and_order_rows() -> None:
 
     assert len(earnings["orders"]) == 2
     assert earnings["orders"][0]["action"] == "SELL_UP"
+
+
+def test_pending_resolution_updates_event_to_resolved(monkeypatch: object) -> None:
+    specs = parse_market_selection("btc5")
+    runner = ContinuousRunner(
+        cfg=ContinuousRunnerConfig(specs=specs, mode="dry_run", duration_minutes=1.0),
+        base_cfg=TraderConfig(poly_event_input="btc-updown-5m-0"),
+    )
+    runner.completed_runs = [
+        EventRunSummary(
+            market_key="btc5",
+            event_slug="btc-updown-5m-1772121300",
+            winning_side=None,
+            predicted_side="UP",
+            orders=[],
+        )
+    ]
+
+    async def _fake_resolve(_: str) -> str | None:
+        return "UP"
+
+    monkeypatch.setattr(continuous_runner, "_resolve_event", _fake_resolve)
+    changed = asyncio.run(runner._resolve_pending_outcomes_once())
+
+    assert changed is True
+    assert runner.completed_runs[0].winning_side == "UP"
+    assert runner.completed_runs[0].was_prediction_accurate is True

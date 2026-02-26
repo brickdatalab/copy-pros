@@ -252,39 +252,39 @@ _PLAYGROUND_HTML = """
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Copy Pros Local Playground</title>
   <style>
-    :root { --bg: #0b1220; --panel: #111a2b; --line: #273449; --txt: #e5ebf3; --muted: #99a8bf; --ok:#32d583; --warn:#fdb022; --bad:#f97066; }
-    body { margin:0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; background: linear-gradient(140deg,#07101d,#0b1220 40%,#0f1b30); color: var(--txt); }
-    .wrap { max-width: 1640px; margin: 0 auto; padding: 18px; display: grid; gap: 14px; }
-    .panel { background: rgba(17,26,43,0.92); border:1px solid var(--line); border-radius: 10px; padding: 14px; }
-    .title { font-size: 20px; margin: 0 0 8px; }
+    :root { --bg: #0b1220; --panel: #0f172a; --panel-soft: #111b32; --line: #24314a; --line-soft: #1f2a3f; --txt: #e2e8f0; --muted: #94a3b8; --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; --accent:#38bdf8; }
+    body { margin:0; font-family: "SF Pro Text", "Segoe UI", -apple-system, BlinkMacSystemFont, "Inter", "Helvetica Neue", sans-serif; background: radial-gradient(circle at 10% 10%, #11203a 0%, #0b1220 35%, #070d18 100%); color: var(--txt); }
+    .wrap { max-width: 1820px; margin: 0 auto; padding: 20px; display: grid; gap: 16px; }
+    .panel { background: linear-gradient(180deg, rgba(17,27,50,0.96), rgba(15,23,42,0.96)); border:1px solid var(--line); border-radius: 12px; padding: 16px; box-shadow: 0 10px 24px rgba(2, 8, 23, 0.35); }
+    .title { font-size: 22px; margin: 0 0 10px; font-weight: 650; letter-spacing: -0.01em; }
     .row { display:flex; flex-wrap: wrap; gap: 10px; align-items: center; }
     label { color: var(--muted); }
     input, select, button { font: inherit; }
-    input[type="number"] { width: 90px; background:#0a1322; border:1px solid var(--line); color:var(--txt); border-radius:6px; padding:6px 8px; }
-    .markets { display:grid; grid-template-columns: repeat(6,minmax(80px,1fr)); gap: 8px; margin-top: 10px; }
-    .mk { border:1px solid var(--line); border-radius:8px; padding:8px; display:flex; gap:6px; align-items:center; justify-content:center; background:#0a1322; }
-    button { border:1px solid var(--line); border-radius:8px; padding:7px 12px; background:#0a1322; color:var(--txt); cursor:pointer; }
-    button:hover { border-color:#3d4f6a; }
+    input[type="number"], select { width: 90px; background:#0a1322; border:1px solid var(--line); color:var(--txt); border-radius:8px; padding:7px 10px; }
+    .markets { display:grid; grid-template-columns: repeat(6,minmax(120px,1fr)); gap: 8px; margin-top: 12px; }
+    .mk { border:1px solid var(--line); border-radius:10px; padding:8px; display:flex; gap:8px; align-items:center; justify-content:center; background:#0b1427; }
+    button { border:1px solid var(--line); border-radius:10px; padding:8px 14px; background:#0b1427; color:var(--txt); cursor:pointer; transition: border-color .15s ease, transform .12s ease; }
+    button:hover { border-color: var(--accent); transform: translateY(-1px); }
     .ok { color: var(--ok); }
     .warn { color: var(--warn); }
     .bad { color: var(--bad); }
     table { width:100%; border-collapse: collapse; }
-    th, td { border-bottom: 1px solid var(--line); padding: 7px 6px; text-align: left; font-size: 13px; }
-    .grid2 { display:grid; grid-template-columns: 1.25fr 1fr; gap: 14px; }
-    pre { background:#0a1322; border:1px solid var(--line); border-radius:8px; padding:10px; overflow:auto; max-height:260px; }
+    th, td { border-bottom: 1px solid var(--line-soft); padding: 8px 8px; text-align: left; font-size: 13px; vertical-align: top; }
+    th { color: var(--muted); font-size: 12px; font-weight: 560; text-transform: uppercase; letter-spacing: 0.04em; }
+    .grid2 { display:grid; grid-template-columns: 1.15fr 1fr; gap: 16px; align-items: start; }
+    pre { background:#0a1322; border:1px solid var(--line); border-radius:10px; padding:12px; overflow:auto; max-height:280px; }
     .metricbar { display:grid; grid-template-columns: repeat(5, minmax(130px, 1fr)); gap: 8px; margin-top: 10px; }
-    .metricbar.compact { grid-template-columns: repeat(4, minmax(120px, 1fr)); }
-    .metric { border:1px solid var(--line); background:#0a1322; border-radius:8px; padding:8px; }
+    .metricbar.compact { grid-template-columns: repeat(4, minmax(150px, 1fr)); }
+    .metric { border:1px solid var(--line); background:#0b1427; border-radius:10px; padding:9px; }
     .metric .k { color: var(--muted); font-size: 12px; display:block; }
-    .metric .v { font-size: 16px; }
-    .mono-sm { font-size: 12px; color: var(--muted); }
-    .section-title { margin: 10px 0 6px; color: var(--muted); font-size: 13px; letter-spacing: 0.01em; }
-    .scroll-table { border:1px solid var(--line); border-radius:8px; overflow:auto; max-height: 250px; background:#0a1322; }
-    .scroll-table table { min-width: 100%; }
-    .scroll-table.short { max-height: 200px; }
-    details { border:1px solid var(--line); border-radius:8px; padding:8px; background:#0a1322; }
+    .metric .v { font-size: 17px; font-weight: 630; }
+    .mono-sm { font-size: 12px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .section-title { margin: 12px 0 8px; color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; }
+    .table-wrap { border:1px solid var(--line); border-radius:10px; overflow-x:auto; background:#0b1427; }
+    .table-wrap table { min-width: 100%; }
+    details { border:1px solid var(--line); border-radius:10px; padding:10px; background:#0a1322; }
     summary { cursor:pointer; color:var(--muted); }
-    @media (max-width: 1220px){ .grid2 { grid-template-columns: 1fr; } .markets { grid-template-columns: repeat(3,minmax(80px,1fr)); } }
+    @media (max-width: 1360px){ .grid2 { grid-template-columns: 1fr; } .markets { grid-template-columns: repeat(3,minmax(110px,1fr)); } }
   </style>
 </head>
 <body>
@@ -312,23 +312,25 @@ _PLAYGROUND_HTML = """
     <div class="grid2">
       <div class="panel">
         <h2 class="title">Pipeline Health</h2>
-        <table id="workersTable">
-          <thead><tr><th>Market</th><th>Status</th><th>Ingest</th><th>Indicators</th><th>Decision</th><th>Orders</th></tr></thead>
-          <tbody></tbody>
-        </table>
+        <div class="table-wrap">
+          <table id="workersTable">
+            <thead><tr><th>Market</th><th>Status</th><th>Ingest</th><th>Indicators</th><th>Decision</th><th>Orders</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
       </div>
       <div class="panel">
         <h2 class="title">Earnings</h2>
         <div id="earningsSummary" class="metricbar compact"></div>
         <p class="section-title">Event Outcomes</p>
-        <div class="scroll-table">
+        <div class="table-wrap">
           <table id="eventsTable">
             <thead><tr><th>Market</th><th>Event</th><th>Status</th><th>Winner / Pred</th><th>Accurate</th><th>Wagered</th><th>Returned</th><th>PnL</th></tr></thead>
             <tbody></tbody>
           </table>
         </div>
         <p class="section-title">Order Feed</p>
-        <div class="scroll-table short">
+        <div class="table-wrap">
           <table id="ordersTable">
             <thead><tr><th>Time</th><th>Market</th><th>Event</th><th>Action</th><th>Px x Sh</th><th>Wager</th><th>Status</th></tr></thead>
             <tbody></tbody>
@@ -391,6 +393,54 @@ _PLAYGROUND_HTML = """
       return "ok";
     }
 
+    function cleanMarketLabel(raw) {
+      const text = String(raw || "");
+      const m = text.match(/^([a-zA-Z]+)(\\d+)$/);
+      if (!m) return text || "-";
+      return `${m[1].toUpperCase()} ${m[2]}m`;
+    }
+
+    function parseEventSlug(slug) {
+      const text = String(slug || "");
+      const m = text.match(/^([a-zA-Z0-9]+)-updown-(\\d+)m-(\\d{10})$/);
+      if (!m) return null;
+      const symbol = m[1].toUpperCase();
+      const timeframe = Number(m[2]);
+      const startEpoch = Number(m[3]);
+      if (!Number.isFinite(startEpoch)) return null;
+      const endEpoch = startEpoch + (timeframe * 60);
+      return { symbol, timeframe, startEpoch, endEpoch };
+    }
+
+    function formatEpochShort(epochSeconds) {
+      if (!Number.isFinite(Number(epochSeconds))) return "-";
+      const dt = new Date(Number(epochSeconds) * 1000);
+      return dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    }
+
+    function cleanEventLabel(slug, marketKey) {
+      const parsed = parseEventSlug(slug);
+      if (!parsed) {
+        const market = cleanMarketLabel(marketKey);
+        return {
+          primary: market,
+          secondary: slug || "-",
+        };
+      }
+      return {
+        primary: `${parsed.symbol} ${parsed.timeframe}m`,
+        secondary: `${formatEpochShort(parsed.startEpoch)} - ${formatEpochShort(parsed.endEpoch)}`,
+      };
+    }
+
+    function formatIsoTimestamp(ts) {
+      const text = String(ts || "");
+      if (!text) return "-";
+      const dt = new Date(text);
+      if (Number.isNaN(dt.getTime())) return text;
+      return dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    }
+
     function renderMetrics(state) {
       const workers = state.workers || {};
       const keys = Object.keys(workers);
@@ -439,10 +489,12 @@ _PLAYGROUND_HTML = """
         const statusTone = status === "resolved" ? "ok" : (status === "running" ? "warn" : "warn");
         const accuracy = eventRow.was_prediction_accurate === true ? "YES" : (eventRow.was_prediction_accurate === false ? "NO" : "-");
         const winnerPred = `${eventRow.winning_side || "-"} / ${eventRow.predicted_side || "-"}`;
+        const marketLabel = cleanMarketLabel(eventRow.market_key);
+        const eventLabel = cleanEventLabel(eventRow.event_slug, eventRow.market_key);
         const tr = document.createElement("tr");
         tr.innerHTML = `
-          <td>${eventRow.market_key || "-"}</td>
-          <td>${eventRow.event_slug || "-"}</td>
+          <td>${marketLabel}</td>
+          <td><div>${eventLabel.primary}</div><div class="mono-sm">${eventLabel.secondary}</div></td>
           <td class="${statusTone}">${status}</td>
           <td>${winnerPred}</td>
           <td>${accuracy}</td>
@@ -462,11 +514,13 @@ _PLAYGROUND_HTML = """
       ordersBody.innerHTML = "";
       orders.forEach((order) => {
         const actionTone = String(order.action || "").startsWith("SELL") ? "warn" : "ok";
+        const marketLabel = cleanMarketLabel(order.market_key);
+        const eventLabel = cleanEventLabel(order.event_slug, order.market_key);
         const tr = document.createElement("tr");
         tr.innerHTML = `
-          <td>${order.ts || "-"}</td>
-          <td>${order.market_key || "-"}</td>
-          <td>${order.event_slug || "-"}</td>
+          <td>${formatIsoTimestamp(order.ts)}</td>
+          <td>${marketLabel}</td>
+          <td><div>${eventLabel.primary}</div><div class="mono-sm">${eventLabel.secondary}</div></td>
           <td class="${actionTone}">${order.action || "-"}</td>
           <td>${fmt(order.price)} x ${fmt(order.shares)}</td>
           <td>${fmt(order.wager_usdc || 0)}</td>

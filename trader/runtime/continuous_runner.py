@@ -312,6 +312,7 @@ class ContinuousRunner:
         ]
         if self.enable_status_table or self.status_callback is not None:
             tasks.append(asyncio.create_task(self._status_loop(), name="status"))
+        tasks.append(asyncio.create_task(self._pending_resolution_loop(), name="pending-resolution"))
         if self.enable_stdin_controls:
             tasks.append(asyncio.create_task(self._input_loop(), name="input"))
         tasks.append(asyncio.create_task(self._duration_guard_loop(), name="duration-guard"))
@@ -417,6 +418,13 @@ class ContinuousRunner:
                 self.console.print(table)
             await self._emit_status_update()
 
+    async def _pending_resolution_loop(self) -> None:
+        while not self.stop_event.is_set():
+            await asyncio.sleep(self.cfg.poll_resolution_interval_sec)
+            updated = await self._resolve_pending_outcomes_once()
+            if updated:
+                await self._emit_status_update()
+
     async def _input_loop(self) -> None:
         while not self.stop_event.is_set():
             line = await asyncio.to_thread(sys.stdin.readline)
@@ -448,31 +456,37 @@ class ContinuousRunner:
             await asyncio.sleep(0.1)
 
     async def _resolve_pending_outcomes(self) -> None:
+        if not any(run.winning_side not in {"UP", "DOWN"} for run in self.completed_runs):
+            return
+        for _ in range(self.cfg.poll_resolution_attempts):
+            await self._resolve_pending_outcomes_once()
+            if not any(run.winning_side not in {"UP", "DOWN"} for run in self.completed_runs):
+                return
+            await asyncio.sleep(self.cfg.poll_resolution_interval_sec)
+
+    async def _resolve_pending_outcomes_once(self) -> bool:
         unresolved_indices = [
             idx for idx, run in enumerate(self.completed_runs) if run.winning_side not in {"UP", "DOWN"}
         ]
         if not unresolved_indices:
-            return
-        for _ in range(self.cfg.poll_resolution_attempts):
-            pending: list[int] = []
-            for idx in unresolved_indices:
-                run = self.completed_runs[idx]
-                runtime_result = await _resolve_event(run.event_slug)
-                if runtime_result is None:
-                    pending.append(idx)
-                    continue
-                self.completed_runs[idx] = EventRunSummary(
-                    market_key=run.market_key,
-                    event_slug=run.event_slug,
-                    winning_side=runtime_result,
-                    orders=run.orders,
-                    predicted_side=run.predicted_side,
-                    was_prediction_accurate=(runtime_result == run.predicted_side) if run.predicted_side else None,
-                )
-            unresolved_indices = pending
-            if not unresolved_indices:
-                return
-            await asyncio.sleep(self.cfg.poll_resolution_interval_sec)
+            return False
+
+        updated = False
+        for idx in unresolved_indices:
+            run = self.completed_runs[idx]
+            runtime_result = await _resolve_event(run.event_slug)
+            if runtime_result not in {"UP", "DOWN"}:
+                continue
+            self.completed_runs[idx] = EventRunSummary(
+                market_key=run.market_key,
+                event_slug=run.event_slug,
+                winning_side=runtime_result,
+                orders=run.orders,
+                predicted_side=run.predicted_side,
+                was_prediction_accurate=(runtime_result == run.predicted_side) if run.predicted_side else None,
+            )
+            updated = True
+        return updated
 
     def _write_report(self) -> Path:
         report_dir = Path("runtime-logs")
