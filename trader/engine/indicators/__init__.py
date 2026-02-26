@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 
 from trader.engine.state import MarketState
 
-IndicatorValue = float | bool | None
+IndicatorValue = float | bool | str | None
 
 
 @dataclass
@@ -17,6 +17,7 @@ class IndicatorEngine:
     mid_flat_delta_15s: float = 0.001
     momentum_accel_5s: float = 0.002
     enable_reversal_imminent: bool = True
+    flow_weight_preset: str = "flow_v1"
 
     def compute(self, state: MarketState, now: datetime) -> dict[str, IndicatorValue]:
         state.snapshot_book_metrics(now)
@@ -95,12 +96,17 @@ class IndicatorEngine:
             "mid_delta_15s": mid_delta_15s,
             "momentum_delta_5s": momentum_delta_5s,
             "reversal_imminent": reversal_imminent,
+            "ew_delta_imbalance": state.ew_delta_imbalance,
+            "flow_toxicity": state.flow_toxicity,
+            "large_trade_ratio": state.large_trade_ratio,
+            "unknown_trade_ratio": state.unknown_trade_ratio,
+            "flow_weight_preset": self.flow_weight_preset,
         }
 
 
 def _vwap(state: MarketState, now: datetime, window_sec: int) -> float | None:
     cutoff = now - timedelta(seconds=window_sec)
-    recent = [(price, size) for ts, price, size in state.trades if ts >= cutoff]
+    recent = [(price, size) for ts, price, size, _ in state.trades if ts >= cutoff]
     if not recent:
         return None
     total_volume = sum(size for _, size in recent)

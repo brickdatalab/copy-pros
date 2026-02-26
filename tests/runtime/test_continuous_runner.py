@@ -192,6 +192,11 @@ def test_runner_snapshot_includes_earnings_totals_and_order_rows() -> None:
                     shares=10.0,
                     wager_usdc=4.0,
                     reason_code="momentum_alignment_entry",
+                    entry_ew_delta_imbalance=0.2,
+                    entry_flow_toxicity=0.4,
+                    entry_large_trade_ratio=0.1,
+                    entry_unknown_trade_ratio=0.2,
+                    entry_flow_weight_preset="flow_v1",
                     status="filled",
                     ts="2026-02-26T15:55:01+00:00",
                 ),
@@ -232,6 +237,66 @@ def test_runner_snapshot_includes_earnings_totals_and_order_rows() -> None:
     assert len(earnings["orders"]) == 2
     assert earnings["orders"][0]["action"] == "SELL_UP"
     assert earnings["orders"][0]["reason_code"] == "take_profit_95c_discipline"
+    assert earnings["orders"][1]["entry_flow_weight_preset"] == "flow_v1"
+
+
+def test_runner_snapshot_includes_flow_entry_profile_and_flow_block_count() -> None:
+    specs = parse_market_selection("btc5")
+    runner = ContinuousRunner(
+        cfg=ContinuousRunnerConfig(specs=specs, mode="dry_run", duration_minutes=1.0),
+        base_cfg=TraderConfig(poly_event_input="btc-updown-5m-0"),
+    )
+    runner.completed_runs = [
+        EventRunSummary(
+            market_key="btc5",
+            event_slug="btc-updown-5m-1772121300",
+            winning_side="UP",
+            predicted_side="UP",
+            was_prediction_accurate=True,
+            flow_blocked_entries_count=3,
+            orders=[
+                EventOrder(
+                    action="BUY_UP",
+                    side="UP",
+                    price=0.2,
+                    shares=10.0,
+                    wager_usdc=2.0,
+                    reason_code="momentum_alignment_entry",
+                    entry_ew_delta_imbalance=0.4,
+                    entry_flow_toxicity=0.6,
+                )
+            ],
+        ),
+        EventRunSummary(
+            market_key="btc5",
+            event_slug="btc-updown-5m-1772121600",
+            winning_side="DOWN",
+            predicted_side="UP",
+            was_prediction_accurate=False,
+            flow_blocked_entries_count=2,
+            orders=[
+                EventOrder(
+                    action="BUY_UP",
+                    side="UP",
+                    price=0.4,
+                    shares=10.0,
+                    wager_usdc=4.0,
+                    reason_code="momentum_alignment_entry",
+                    entry_ew_delta_imbalance=-0.2,
+                    entry_flow_toxicity=0.9,
+                )
+            ],
+        ),
+    ]
+
+    totals = runner.snapshot()["earnings"]["totals"]
+    profile = totals["entry_flow_profile"]
+
+    assert totals["entry_blocked_flow_against_direction_count"] == 5
+    assert profile["avg_ew_delta_imbalance_winner_entries"] == 0.4
+    assert profile["avg_ew_delta_imbalance_loser_entries"] == -0.2
+    assert profile["avg_flow_toxicity_winner_entries"] == 0.6
+    assert profile["avg_flow_toxicity_loser_entries"] == 0.9
 
 
 def test_pending_resolution_updates_event_to_resolved(monkeypatch: object) -> None:

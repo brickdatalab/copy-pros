@@ -7,7 +7,7 @@ def test_external_signal_weight_cannot_exceed_0_51() -> None:
 
 
 def test_policy_emits_buy_up_for_bullish_snapshot() -> None:
-    policy = DecisionPolicy()
+    policy = DecisionPolicy(flow_weight_preset="baseline")
     action = policy.decide(
         indicators={
             "order_imbalance": 0.28,
@@ -25,7 +25,7 @@ def test_policy_emits_buy_up_for_bullish_snapshot() -> None:
 
 
 def test_policy_emits_hold_on_weak_signal() -> None:
-    policy = DecisionPolicy()
+    policy = DecisionPolicy(flow_weight_preset="baseline")
     action = policy.decide(
         indicators={
             "order_imbalance": 0.01,
@@ -40,7 +40,7 @@ def test_policy_emits_hold_on_weak_signal() -> None:
 
 
 def test_policy_holds_when_edge_too_low() -> None:
-    policy = DecisionPolicy(min_confidence=0.1, min_edge=0.9)
+    policy = DecisionPolicy(min_confidence=0.1, min_edge=0.9, flow_weight_preset="baseline")
     action = policy.decide(
         indicators={
             "order_imbalance": 0.05,
@@ -56,7 +56,7 @@ def test_policy_holds_when_edge_too_low() -> None:
 
 
 def test_reversal_setup_relaxes_confidence_for_buy_up_under_0_25() -> None:
-    policy = DecisionPolicy()
+    policy = DecisionPolicy(flow_weight_preset="baseline")
     action = policy.decide(
         indicators={
             "order_imbalance": 0.22,
@@ -77,7 +77,7 @@ def test_reversal_setup_relaxes_confidence_for_buy_up_under_0_25() -> None:
 
 
 def test_bearish_buy_down_uses_momentum_alignment_reason_code() -> None:
-    policy = DecisionPolicy()
+    policy = DecisionPolicy(flow_weight_preset="baseline")
     action = policy.decide(
         indicators={
             "order_imbalance": -0.3,
@@ -95,7 +95,7 @@ def test_bearish_buy_down_uses_momentum_alignment_reason_code() -> None:
 
 
 def test_reversal_setup_does_not_relax_confidence_above_0_25_entry() -> None:
-    policy = DecisionPolicy()
+    policy = DecisionPolicy(flow_weight_preset="baseline")
     action = policy.decide(
         indicators={
             "order_imbalance": 0.22,
@@ -113,3 +113,68 @@ def test_reversal_setup_does_not_relax_confidence_above_0_25_entry() -> None:
     assert action.reason_code == "weak_signal"
     assert action.threshold_relaxed is False
     assert action.effective_min_confidence == 0.52
+
+
+def test_flow_v1_uses_signed_delta_as_primary_directional_driver() -> None:
+    policy = DecisionPolicy(enable_flow_signals=True, flow_weight_preset="flow_v1")
+    action = policy.decide(
+        indicators={
+            "order_imbalance": 0.0,
+            "mid_momentum_30s": 0.0,
+            "spread_momentum_30s": 0.0,
+            "mid_price": 0.20,
+            "vwap_1m": 0.20,
+            "ew_delta_imbalance": 0.40,
+            "flow_toxicity": 0.80,
+            "large_trade_ratio": 0.70,
+            "unknown_trade_ratio": 0.0,
+        },
+        remaining_sec=240,
+    )
+    assert action.action == DecisionAction.BUY_UP
+    assert action.flow_boost > 1.0
+
+
+def test_flow_unknown_ratio_safeguard_reduces_delta_confidence() -> None:
+    policy = DecisionPolicy(
+        enable_flow_signals=True,
+        flow_weight_preset="flow_v1",
+        flow_unknown_ratio_cutoff=0.35,
+        flow_unknown_delta_scale=0.5,
+    )
+    action = policy.decide(
+        indicators={
+            "order_imbalance": 0.0,
+            "mid_momentum_30s": 0.0,
+            "spread_momentum_30s": 0.0,
+            "mid_price": 0.20,
+            "vwap_1m": 0.20,
+            "ew_delta_imbalance": 0.30,
+            "flow_toxicity": 0.60,
+            "large_trade_ratio": 0.60,
+            "unknown_trade_ratio": 0.60,
+        },
+        remaining_sec=240,
+    )
+    assert action.action == DecisionAction.HOLD
+    assert action.reason_code == "weak_signal"
+
+
+def test_baseline_preset_ignores_flow_terms_and_preserves_old_scoring() -> None:
+    policy = DecisionPolicy(enable_flow_signals=True, flow_weight_preset="baseline")
+    action = policy.decide(
+        indicators={
+            "order_imbalance": 0.0,
+            "mid_momentum_30s": 0.0,
+            "spread_momentum_30s": 0.0,
+            "mid_price": 0.20,
+            "vwap_1m": 0.20,
+            "ew_delta_imbalance": 0.95,
+            "flow_toxicity": 1.0,
+            "large_trade_ratio": 1.0,
+            "unknown_trade_ratio": 0.0,
+        },
+        remaining_sec=240,
+    )
+    assert action.action == DecisionAction.HOLD
+    assert action.flow_boost == 0.0

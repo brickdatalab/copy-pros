@@ -52,6 +52,11 @@ class EventOrder:
     status: str = "filled"
     ts: str | None = None
     reason_code: str | None = None
+    entry_ew_delta_imbalance: float | None = None
+    entry_flow_toxicity: float | None = None
+    entry_large_trade_ratio: float | None = None
+    entry_unknown_trade_ratio: float | None = None
+    entry_flow_weight_preset: str | None = None
 
 
 @dataclass(frozen=True)
@@ -62,6 +67,7 @@ class EventRunSummary:
     orders: list[EventOrder]
     predicted_side: str | None = None
     was_prediction_accurate: bool | None = None
+    flow_blocked_entries_count: int = 0
 
 
 @dataclass
@@ -569,6 +575,17 @@ class ContinuousRunner:
             f"avg_loss={totals['average_loss_usdc']:.3f} "
             f"profit_factor={totals['profit_factor']}"
         )
+        flow_profile = totals.get("entry_flow_profile", {})
+        self.console.print(
+            "[cyan]Flow profile:[/cyan] "
+            f"ew_delta(win/loss)="
+            f"{flow_profile.get('avg_ew_delta_imbalance_winner_entries')}/"
+            f"{flow_profile.get('avg_ew_delta_imbalance_loser_entries')} "
+            f"tox(win/loss)="
+            f"{flow_profile.get('avg_flow_toxicity_winner_entries')}/"
+            f"{flow_profile.get('avg_flow_toxicity_loser_entries')} "
+            f"flow_blocks={totals.get('entry_blocked_flow_against_direction_count')}"
+        )
         self.console.print(f"[cyan]Report written:[/cyan] {report_path}")
 
     async def _emit_status_update(self) -> None:
@@ -677,6 +694,27 @@ def _build_earnings_payload(
             pnl_share = (wager / total_reason_wager) if total_reason_wager > 0 else 0.0
             bucket["attributed_pnl_usdc"] = float(bucket["attributed_pnl_usdc"]) + (event_pnl * pnl_share)
 
+    winner_entry_ew_delta: list[float] = []
+    loser_entry_ew_delta: list[float] = []
+    winner_entry_flow_toxicity: list[float] = []
+    loser_entry_flow_toxicity: list[float] = []
+    flow_blocked_entries_count = 0
+    for run in completed_runs:
+        flow_blocked_entries_count += int(run.flow_blocked_entries_count)
+        run_metrics = _event_metrics(run.orders, run.winning_side)
+        run_event_pnl = run_metrics["pnl_usdc"]
+        if run_event_pnl is None:
+            continue
+        target_delta = winner_entry_ew_delta if run_event_pnl > 0 else loser_entry_ew_delta
+        target_toxicity = winner_entry_flow_toxicity if run_event_pnl > 0 else loser_entry_flow_toxicity
+        for order in run.orders:
+            if not order.action.startswith("BUY"):
+                continue
+            if order.entry_ew_delta_imbalance is not None:
+                target_delta.append(float(order.entry_ew_delta_imbalance))
+            if order.entry_flow_toxicity is not None:
+                target_toxicity.append(float(order.entry_flow_toxicity))
+
     open_orders_count = sum(len(getattr(runtime, "open_orders", {})) for runtime in active_runtimes.values())
     open_position_sides_count = 0
     total_open_up_exposure = 0.0
@@ -692,6 +730,7 @@ def _build_earnings_payload(
         total_open_down_exposure += float(filled.get("DOWN", 0.0)) + float(open_exp.get("DOWN", 0.0))
         if cfg is not None:
             total_budget_limit += float(getattr(cfg, "max_wager_per_side_usdc", 0.0))
+        flow_blocked_entries_count += int(getattr(runtime, "flow_blocked_entries_count", 0))
 
     return {
         "totals": {
@@ -722,6 +761,29 @@ def _build_earnings_payload(
                 }
                 for code, values in sorted(reason_code_breakdown.items())
             },
+            "entry_flow_profile": {
+                "avg_ew_delta_imbalance_winner_entries": (
+                    round(sum(winner_entry_ew_delta) / len(winner_entry_ew_delta), 6)
+                    if winner_entry_ew_delta
+                    else None
+                ),
+                "avg_ew_delta_imbalance_loser_entries": (
+                    round(sum(loser_entry_ew_delta) / len(loser_entry_ew_delta), 6)
+                    if loser_entry_ew_delta
+                    else None
+                ),
+                "avg_flow_toxicity_winner_entries": (
+                    round(sum(winner_entry_flow_toxicity) / len(winner_entry_flow_toxicity), 6)
+                    if winner_entry_flow_toxicity
+                    else None
+                ),
+                "avg_flow_toxicity_loser_entries": (
+                    round(sum(loser_entry_flow_toxicity) / len(loser_entry_flow_toxicity), 6)
+                    if loser_entry_flow_toxicity
+                    else None
+                ),
+            },
+            "entry_blocked_flow_against_direction_count": flow_blocked_entries_count,
             "open_orders_count": open_orders_count,
             "open_position_sides_count": open_position_sides_count,
             "open_up_exposure_usdc": round(total_open_up_exposure, 6),
@@ -780,6 +842,11 @@ def _build_event_and_orders(
             "wager_usdc": order.wager_usdc,
             "status": order.status,
             "reason_code": order.reason_code,
+            "entry_ew_delta_imbalance": order.entry_ew_delta_imbalance,
+            "entry_flow_toxicity": order.entry_flow_toxicity,
+            "entry_large_trade_ratio": order.entry_large_trade_ratio,
+            "entry_unknown_trade_ratio": order.entry_unknown_trade_ratio,
+            "entry_flow_weight_preset": order.entry_flow_weight_preset,
         }
         for order in run.orders
     ]
@@ -842,6 +909,11 @@ def _runtime_orders(runtime: BotRuntime) -> list[EventOrder]:
                 status=str(getattr(record, "status", "submitted")),
                 ts=str(getattr(record, "ts", "")) or None,
                 reason_code=str(getattr(record, "reason_code", "")) or None,
+                entry_ew_delta_imbalance=_safe_optional_float(getattr(record, "entry_ew_delta_imbalance", None)),
+                entry_flow_toxicity=_safe_optional_float(getattr(record, "entry_flow_toxicity", None)),
+                entry_large_trade_ratio=_safe_optional_float(getattr(record, "entry_large_trade_ratio", None)),
+                entry_unknown_trade_ratio=_safe_optional_float(getattr(record, "entry_unknown_trade_ratio", None)),
+                entry_flow_weight_preset=str(getattr(record, "entry_flow_weight_preset", "")) or None,
             )
         )
     return rows
@@ -887,6 +959,15 @@ def _safe_float(value: Any) -> float:
         return 0.0
 
 
+def _safe_optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _number_or_zero(value: float | int | None) -> float:
     if value is None:
         return 0.0
@@ -900,6 +981,7 @@ def _to_event_run_summary(market_key: str, result: EventRunResult) -> EventRunSu
         winning_side=result.winning_side,
         predicted_side=result.predicted_side,
         was_prediction_accurate=result.was_prediction_accurate,
+        flow_blocked_entries_count=result.flow_blocked_entries_count,
         orders=[
             EventOrder(
                 action=order.action,
@@ -910,6 +992,11 @@ def _to_event_run_summary(market_key: str, result: EventRunResult) -> EventRunSu
                 status=order.status,
                 ts=order.ts,
                 reason_code=order.reason_code,
+                entry_ew_delta_imbalance=order.entry_ew_delta_imbalance,
+                entry_flow_toxicity=order.entry_flow_toxicity,
+                entry_large_trade_ratio=order.entry_large_trade_ratio,
+                entry_unknown_trade_ratio=order.entry_unknown_trade_ratio,
+                entry_flow_weight_preset=order.entry_flow_weight_preset,
             )
             for order in result.orders
             if order.status in {"filled", "submitted"}

@@ -4,9 +4,11 @@ from trader.adapters.supabase.writer import BufferedSupabaseWriter
 from trader.config import TraderConfig
 from trader.runtime.orchestrator import (
     BotRuntime,
+    _flow_blocks_entry,
     _map_reversal_block_reason,
     compute_target_runtime_seconds,
 )
+from trader.strategy.decision_policy import DecisionAction
 from trader.ui.console import BotConsole
 
 
@@ -77,3 +79,34 @@ def test_reversal_block_reason_mapping() -> None:
     assert _map_reversal_block_reason("signal_not_persistent") == "reversal_detected_but_streak_not_satisfied"
     assert _map_reversal_block_reason("side_budget_exhausted") == "reversal_detected_but_budget_exhausted"
     assert _map_reversal_block_reason("price_cap") == "reversal_detected_but_price_cap_exceeded"
+
+
+def test_flow_blocks_buy_up_when_delta_is_sufficiently_negative() -> None:
+    assert _flow_blocks_entry(DecisionAction.BUY_UP, ew_delta_imbalance=-0.11, threshold=0.10) is True
+    assert _flow_blocks_entry(DecisionAction.BUY_UP, ew_delta_imbalance=-0.10, threshold=0.10) is False
+
+
+def test_flow_blocks_buy_down_when_delta_is_sufficiently_positive() -> None:
+    assert _flow_blocks_entry(DecisionAction.BUY_DOWN, ew_delta_imbalance=0.12, threshold=0.10) is True
+    assert _flow_blocks_entry(DecisionAction.BUY_DOWN, ew_delta_imbalance=0.10, threshold=0.10) is False
+
+
+def test_flow_gate_does_not_block_hold_actions() -> None:
+    assert _flow_blocks_entry(DecisionAction.HOLD, ew_delta_imbalance=0.75, threshold=0.10) is False
+
+
+def test_activity_snapshot_keeps_string_indicators() -> None:
+    runtime = BotRuntime(
+        cfg=TraderConfig(poly_event_input="btc-updown-5m-0", bot_mode="dry_run"),
+        console=BotConsole(console=Console(stderr=True, quiet=True)),
+        writer=BufferedSupabaseWriter(enabled=False),
+    )
+    runtime.last_indicator_snapshot = {
+        "flow_weight_preset": "flow_v1",
+        "ew_delta_imbalance": 0.1234567,
+    }
+
+    indicators = runtime.activity_snapshot()["indicators"]
+
+    assert indicators["flow_weight_preset"] == "flow_v1"
+    assert indicators["ew_delta_imbalance"] == 0.123457

@@ -20,6 +20,19 @@ def normalize_ws_payload(payload: object) -> list[dict[str, object]]:
     return []
 
 
+def classify_trade_side(
+    price: float,
+    best_bid: float | None,
+    best_ask: float | None,
+    tolerance: float = 0.001,
+) -> int:
+    if best_ask is not None and best_ask > 0 and price >= best_ask * (1 - tolerance):
+        return 1
+    if best_bid is not None and best_bid > 0 and price <= best_bid * (1 + tolerance):
+        return -1
+    return 0
+
+
 async def stream_market_events(asset_ids: list[str]) -> AsyncIterator[dict[str, object]]:
     if not asset_ids:
         return
