@@ -21,6 +21,7 @@ def test_config_loads_default_constraints(monkeypatch: pytest.MonkeyPatch) -> No
     assert cfg.vwap_up_delta_15s == 0.003
     assert cfg.mid_flat_delta_15s == 0.001
     assert cfg.momentum_accel_5s == 0.002
+    assert cfg.enable_convexity_budget_reservation is False
     assert cfg.signal_persist_ticks == 4
     assert cfg.entry_cooldown_ms == 750
     assert cfg.hedge_max_exposure_ratio == 0.25

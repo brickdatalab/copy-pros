@@ -60,3 +60,62 @@ def test_reversal_sizer_blocks_when_remaining_budget_below_minimum_wager() -> No
     )
     assert size.allowed is False
     assert size.reason_code in {"below_min_wager", "cannot_satisfy_min_shares"}
+
+
+def test_convexity_budget_reservation_caps_expensive_0_60_plus_entries() -> None:
+    size = propose_order_size(
+        target_confidence=1.0,
+        price=0.65,
+        current_side_exposure_usdc=0.0,
+        max_wager_per_side_usdc=10.0,
+        max_single_wager_usdc=10.0,
+        min_wager_usdc=1.0,
+        min_shares_per_purchase=5.0,
+        enable_convexity_budget_reservation=True,
+    )
+    assert size.allowed is False
+    assert size.throttle_applied is True
+    assert size.throttle_cap_usdc == 2.0
+    assert size.reason_code == "cannot_satisfy_min_shares"
+
+
+def test_convexity_budget_reservation_caps_mid_range_entries() -> None:
+    size = propose_order_size(
+        target_confidence=1.0,
+        price=0.55,
+        current_side_exposure_usdc=0.0,
+        max_wager_per_side_usdc=10.0,
+        max_single_wager_usdc=10.0,
+        min_wager_usdc=1.0,
+        min_shares_per_purchase=5.0,
+        enable_convexity_budget_reservation=True,
+    )
+    assert size.allowed is True
+    assert size.throttle_applied is True
+    assert size.throttle_cap_usdc == 4.0
+    assert size.wager_usdc <= 4.0
+
+
+def test_convexity_budget_reservation_disabled_keeps_original_upper_bound() -> None:
+    throttled = propose_order_size(
+        target_confidence=1.0,
+        price=0.65,
+        current_side_exposure_usdc=0.0,
+        max_wager_per_side_usdc=10.0,
+        max_single_wager_usdc=10.0,
+        min_wager_usdc=1.0,
+        min_shares_per_purchase=5.0,
+        enable_convexity_budget_reservation=True,
+    )
+    baseline = propose_order_size(
+        target_confidence=1.0,
+        price=0.65,
+        current_side_exposure_usdc=0.0,
+        max_wager_per_side_usdc=10.0,
+        max_single_wager_usdc=10.0,
+        min_wager_usdc=1.0,
+        min_shares_per_purchase=5.0,
+        enable_convexity_budget_reservation=False,
+    )
+    assert baseline.allowed is True
+    assert baseline.wager_usdc > throttled.wager_usdc

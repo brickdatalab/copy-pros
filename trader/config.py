@@ -26,6 +26,7 @@ class TraderConfig:
     max_single_wager_usdc: float = 10.0
     min_wager_usdc: float = 1.0
     min_shares_per_purchase: float = 5.0
+    enable_convexity_budget_reservation: bool = False
     allow_both_sides: bool = True
     count_open_orders_in_exposure: bool = True
     disallow_duplicate_event_run: bool = True
@@ -88,6 +89,7 @@ def load_config() -> TraderConfig:
         max_single_wager_usdc=_env_float("MAX_SINGLE_WAGER_USDC", 10.0),
         min_wager_usdc=_env_float("MIN_WAGER_USDC", 1.0),
         min_shares_per_purchase=_env_float("MIN_SHARES_PER_PURCHASE", 5.0),
+        enable_convexity_budget_reservation=_env_bool("ENABLE_CONVEXITY_BUDGET_RESERVATION", False),
         allow_both_sides=_env_bool("ALLOW_BOTH_SIDES", True),
         count_open_orders_in_exposure=_env_bool("COUNT_OPEN_ORDERS_IN_EXPOSURE", True),
         disallow_duplicate_event_run=_env_bool("DISALLOW_DUPLICATE_EVENT_RUN", True),

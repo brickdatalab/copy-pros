@@ -191,6 +191,7 @@ def test_runner_snapshot_includes_earnings_totals_and_order_rows() -> None:
                     price=0.4,
                     shares=10.0,
                     wager_usdc=4.0,
+                    reason_code="momentum_alignment_entry",
                     status="filled",
                     ts="2026-02-26T15:55:01+00:00",
                 ),
@@ -200,6 +201,7 @@ def test_runner_snapshot_includes_earnings_totals_and_order_rows() -> None:
                     price=0.9,
                     shares=4.0,
                     wager_usdc=3.6,
+                    reason_code="take_profit_95c_discipline",
                     status="filled",
                     ts="2026-02-26T15:56:01+00:00",
                 ),
@@ -216,6 +218,12 @@ def test_runner_snapshot_includes_earnings_totals_and_order_rows() -> None:
     assert round(totals["resolved_wagered_usdc"], 3) == 4.0
     assert round(totals["resolved_returned_usdc"], 3) == 9.6
     assert round(totals["resolved_pnl_usdc"], 3) == 5.6
+    assert round(totals["win_rate"], 3) == 1.0
+    assert round(totals["average_win_usdc"], 3) == 5.6
+    assert round(totals["average_loss_usdc"], 3) == 0.0
+    assert totals["profit_factor"] is None
+    assert totals["reason_code_breakdown"]["momentum_alignment_entry"]["entries"] == 1
+    assert round(totals["reason_code_breakdown"]["momentum_alignment_entry"]["attributed_pnl_usdc"], 3) == 5.6
 
     assert len(earnings["events"]) == 1
     assert earnings["events"][0]["status"] == "resolved"
@@ -223,6 +231,7 @@ def test_runner_snapshot_includes_earnings_totals_and_order_rows() -> None:
 
     assert len(earnings["orders"]) == 2
     assert earnings["orders"][0]["action"] == "SELL_UP"
+    assert earnings["orders"][0]["reason_code"] == "take_profit_95c_discipline"
 
 
 def test_pending_resolution_updates_event_to_resolved(monkeypatch: object) -> None:

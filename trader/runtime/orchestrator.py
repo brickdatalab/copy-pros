@@ -73,6 +73,12 @@ def empty_runtime_activity_snapshot() -> dict[str, Any]:
         "last_order_shares": None,
         "last_order_status": None,
         "last_order_ts": None,
+        "filled_up_exposure_usdc": 0.0,
+        "filled_down_exposure_usdc": 0.0,
+        "open_up_exposure_usdc": 0.0,
+        "open_down_exposure_usdc": 0.0,
+        "side_budget_limit_usdc": 0.0,
+        "open_position_sides_count": 0,
         "indicators": {key: None for key in _INDICATOR_ACTIVITY_KEYS},
     }
 
@@ -85,6 +91,7 @@ class OpenOrder:
     price: float
     shares: float
     wager_usdc: float
+    reason_code: str | None
     created_at: float
 
 
@@ -97,6 +104,7 @@ class EventOrderRecord:
     wager_usdc: float
     status: str
     ts: str
+    reason_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -185,6 +193,13 @@ class BotRuntime:
                 "last_order_shares": self.last_order_shares,
                 "last_order_status": self.last_order_status,
                 "last_order_ts": self.last_order_ts,
+                "filled_up_exposure_usdc": self.exposure_filled_usdc["UP"],
+                "filled_down_exposure_usdc": self.exposure_filled_usdc["DOWN"],
+                "open_up_exposure_usdc": self.exposure_open_usdc["UP"],
+                "open_down_exposure_usdc": self.exposure_open_usdc["DOWN"],
+                "side_budget_limit_usdc": self.cfg.max_wager_per_side_usdc,
+                "open_position_sides_count": int(self.exposure_filled_usdc["UP"] > 0)
+                + int(self.exposure_filled_usdc["DOWN"] > 0),
                 "indicators": _compact_indicator_snapshot(
                     self.last_indicator_snapshot if self.last_indicator_snapshot else self.indicators
                 ),
@@ -530,7 +545,7 @@ class BotRuntime:
                             "side": "UP",
                             "price": max(up_bid, self.cfg.take_profit_limit_price),
                             "confidence": 1.0,
-                            "reason_code": "take_profit_trigger",
+                            "reason_code": "take_profit_95c_discipline",
                         }
                     )
                 if self.exposure_filled_usdc["DOWN"] > 0 and down_bid >= self.cfg.take_profit_trigger_price:
@@ -540,7 +555,7 @@ class BotRuntime:
                             "side": "DOWN",
                             "price": max(down_bid, self.cfg.take_profit_limit_price),
                             "confidence": 1.0,
-                            "reason_code": "take_profit_trigger",
+                            "reason_code": "take_profit_95c_discipline",
                         }
                     )
 
@@ -556,6 +571,7 @@ class BotRuntime:
                 price = float(intent["price"])
                 confidence = float(intent["confidence"])
                 reversal_imminent = bool(intent.get("reversal_imminent", False))
+                reason_code = str(intent.get("reason_code", ""))
 
                 current_exposure = self.exposure_filled_usdc[side]
                 if self.cfg.count_open_orders_in_exposure:
@@ -571,7 +587,20 @@ class BotRuntime:
                         min_wager_usdc=self.cfg.min_wager_usdc,
                         min_shares_per_purchase=self.cfg.min_shares_per_purchase,
                         reversal_imminent=reversal_imminent,
+                        enable_convexity_budget_reservation=self.cfg.enable_convexity_budget_reservation,
                     )
+                    if size.throttle_applied:
+                        await self.writer.enqueue_runtime_event(
+                            run_id,
+                            "info",
+                            "convexity_budget_throttle",
+                            {
+                                "reason_code": "expensive_entry_throttled_to_preserve_convexity_budget",
+                                "side": side,
+                                "price": price,
+                                "throttle_cap_usdc": size.throttle_cap_usdc,
+                            },
+                        )
                     if not size.allowed:
                         reason_code = _map_reversal_block_reason(size.reason_code) if reversal_imminent else size.reason_code
                         if reversal_imminent:
@@ -606,10 +635,26 @@ class BotRuntime:
                     )
                     risk_decision = validate_order(candidate, risk)
                     if not risk_decision.allowed:
+                        base_reason = (
+                            "entry_blocked_price_too_high"
+                            if risk_decision.reason_code == "price_cap"
+                            else risk_decision.reason_code
+                        )
+                        if risk_decision.reason_code == "price_cap":
+                            await self.writer.enqueue_runtime_event(
+                                run_id,
+                                "warn",
+                                "entry_blocked",
+                                {
+                                    "reason_code": "entry_blocked_price_too_high",
+                                    "side": side,
+                                    "price": price,
+                                },
+                            )
                         reason_code = (
                             _map_reversal_block_reason(risk_decision.reason_code)
                             if reversal_imminent
-                            else risk_decision.reason_code
+                            else base_reason
                         )
                         if reversal_imminent:
                             await self.writer.enqueue_runtime_event(
@@ -641,6 +686,7 @@ class BotRuntime:
                         action="ENTRY",
                         payload=payload,
                         wager_usdc=size.wager_usdc,
+                        reason_code=reason_code,
                         trading_client=trading_client,
                     )
                 else:
@@ -659,6 +705,7 @@ class BotRuntime:
                         action="TAKE_PROFIT",
                         payload=payload,
                         wager_usdc=price * shares,
+                        reason_code=reason_code or "take_profit_95c_discipline",
                         trading_client=trading_client,
                         is_sell=True,
                     )
@@ -722,6 +769,7 @@ class BotRuntime:
         action: str,
         payload: dict[str, Any],
         wager_usdc: float,
+        reason_code: str,
         trading_client: TradingClient,
         is_sell: bool = False,
     ) -> None:
@@ -755,7 +803,7 @@ class BotRuntime:
                     "shares": payload["shares"],
                     "wager_usdc": wager_usdc,
                     "status": "filled",
-                    "metadata": {"mode": "dry_run", "action": action},
+                    "metadata": {"mode": "dry_run", "action": action, "reason_code": reason_code},
                 },
             )
             self.order_records.append(
@@ -767,6 +815,7 @@ class BotRuntime:
                     wager_usdc=wager_usdc,
                     status="filled",
                     ts=datetime.now(tz=timezone.utc).isoformat(),
+                    reason_code=reason_code,
                 )
             )
             self._record_order_activity(
@@ -811,6 +860,7 @@ class BotRuntime:
                 price=float(payload["price"]),
                 shares=float(payload["shares"]),
                 wager_usdc=wager_usdc,
+                reason_code=reason_code,
                 created_at=time.time(),
             )
 
@@ -827,7 +877,7 @@ class BotRuntime:
                 "shares": payload["shares"],
                 "wager_usdc": wager_usdc,
                 "status": "submitted",
-                "metadata": {"exchange_resp": exchange_resp},
+                "metadata": {"exchange_resp": exchange_resp, "reason_code": reason_code},
             },
         )
         self.order_records.append(
@@ -839,6 +889,7 @@ class BotRuntime:
                 wager_usdc=wager_usdc,
                 status="submitted",
                 ts=datetime.now(tz=timezone.utc).isoformat(),
+                reason_code=reason_code,
             )
         )
         self._record_order_activity(
@@ -882,7 +933,11 @@ class BotRuntime:
                     "shares": open_order.shares,
                     "wager_usdc": open_order.wager_usdc,
                     "status": "filled",
-                    "metadata": {"source_status": status, "phase": "reconcile"},
+                    "metadata": {
+                        "source_status": status,
+                        "phase": "reconcile",
+                        "reason_code": open_order.reason_code,
+                    },
                 },
             )
             self.order_records.append(
@@ -894,6 +949,7 @@ class BotRuntime:
                     wager_usdc=open_order.wager_usdc,
                     status="filled",
                     ts=datetime.now(tz=timezone.utc).isoformat(),
+                    reason_code=open_order.reason_code,
                 )
             )
             self._record_order_activity(

@@ -124,7 +124,7 @@ class DecisionPolicy:
                 action=DecisionAction.BUY_UP,
                 confidence=confidence,
                 edge=edge,
-                reason_code="bullish_reversal_setup" if threshold_relaxed else "bullish_alignment",
+                reason_code="bullish_reversal_setup" if threshold_relaxed else "momentum_alignment_entry",
                 effective_min_confidence=effective_min_confidence,
                 threshold_relaxed=threshold_relaxed,
             )
@@ -133,7 +133,7 @@ class DecisionPolicy:
             action=DecisionAction.BUY_DOWN,
             confidence=confidence,
             edge=edge,
-            reason_code="bearish_alignment",
+            reason_code="momentum_alignment_entry",
             effective_min_confidence=effective_min_confidence,
             threshold_relaxed=False,
         )
