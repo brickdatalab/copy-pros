@@ -19,7 +19,7 @@ from trader.adapters.polymarket.trading_client import TradingClient
 from trader.adapters.polymarket.ws_client import stream_market_events
 from trader.adapters.supabase.writer import BufferedSupabaseWriter
 from trader.config import TraderConfig
-from trader.engine.indicators import IndicatorEngine
+from trader.engine.indicators import IndicatorEngine, IndicatorValue
 from trader.engine.state import MarketState
 from trader.execution.cancel_replace import should_cancel
 from trader.execution.order_router import build_entry_order
@@ -43,6 +43,10 @@ _INDICATOR_ACTIVITY_KEYS: tuple[str, ...] = (
     "vwap_1m",
     "mid_momentum_30s",
     "spread_momentum_30s",
+    "reversal_imminent",
+    "vwap_delta_15s",
+    "mid_delta_15s",
+    "momentum_delta_5s",
 )
 
 
@@ -69,6 +73,12 @@ def empty_runtime_activity_snapshot() -> dict[str, Any]:
         "last_order_shares": None,
         "last_order_status": None,
         "last_order_ts": None,
+        "filled_up_exposure_usdc": 0.0,
+        "filled_down_exposure_usdc": 0.0,
+        "open_up_exposure_usdc": 0.0,
+        "open_down_exposure_usdc": 0.0,
+        "side_budget_limit_usdc": 0.0,
+        "open_position_sides_count": 0,
         "indicators": {key: None for key in _INDICATOR_ACTIVITY_KEYS},
     }
 
@@ -81,6 +91,7 @@ class OpenOrder:
     price: float
     shares: float
     wager_usdc: float
+    reason_code: str | None
     created_at: float
 
 
@@ -93,6 +104,7 @@ class EventOrderRecord:
     wager_usdc: float
     status: str
     ts: str
+    reason_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -123,7 +135,7 @@ class BotRuntime:
     market_state: MarketState = field(default_factory=lambda: MarketState(market_id="market"))
     indicator_engine: IndicatorEngine = field(default_factory=IndicatorEngine)
     decision_policy: DecisionPolicy = field(default_factory=DecisionPolicy)
-    indicators: dict[str, float | None] = field(default_factory=dict)
+    indicators: dict[str, IndicatorValue] = field(default_factory=dict)
     intents: asyncio.Queue[dict[str, Any]] = field(default_factory=asyncio.Queue)
     state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     stop_event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -143,7 +155,7 @@ class BotRuntime:
     ws_last_ts: float | None = None
     indicator_updates: int = 0
     indicator_last_ts: float | None = None
-    last_indicator_snapshot: dict[str, float | None] = field(default_factory=dict)
+    last_indicator_snapshot: dict[str, IndicatorValue] = field(default_factory=dict)
     decision_last_ts: float | None = None
     decision_last_action: str | None = None
     decision_last_confidence: float | None = None
@@ -181,6 +193,13 @@ class BotRuntime:
                 "last_order_shares": self.last_order_shares,
                 "last_order_status": self.last_order_status,
                 "last_order_ts": self.last_order_ts,
+                "filled_up_exposure_usdc": self.exposure_filled_usdc["UP"],
+                "filled_down_exposure_usdc": self.exposure_filled_usdc["DOWN"],
+                "open_up_exposure_usdc": self.exposure_open_usdc["UP"],
+                "open_down_exposure_usdc": self.exposure_open_usdc["DOWN"],
+                "side_budget_limit_usdc": self.cfg.max_wager_per_side_usdc,
+                "open_position_sides_count": int(self.exposure_filled_usdc["UP"] > 0)
+                + int(self.exposure_filled_usdc["DOWN"] > 0),
                 "indicators": _compact_indicator_snapshot(
                     self.last_indicator_snapshot if self.last_indicator_snapshot else self.indicators
                 ),
@@ -192,6 +211,12 @@ class BotRuntime:
         self.decision_policy = DecisionPolicy(
             min_confidence=self.cfg.min_signal_confidence,
             min_edge=self.cfg.min_signal_edge,
+        )
+        self.indicator_engine = IndicatorEngine(
+            vwap_up_delta_15s=self.cfg.vwap_up_delta_15s,
+            mid_flat_delta_15s=self.cfg.mid_flat_delta_15s,
+            momentum_accel_5s=self.cfg.momentum_accel_5s,
+            enable_reversal_imminent=self.cfg.enable_reversal_imminent,
         )
         ctx = await fetch_event_market_context(self.cfg.poly_event_input)
         now_ts = int(time.time())
@@ -376,7 +401,12 @@ class BotRuntime:
             if not indicators:
                 continue
 
-            decision = self.decision_policy.decide(indicators, remaining_sec)
+            decision = self.decision_policy.decide(
+                indicators,
+                remaining_sec,
+                candidate_up_price=up_ask if up_ask > 0 else None,
+                candidate_down_price=down_ask if down_ask > 0 else None,
+            )
             streak = self._advance_signal_streak(decision.action)
             self.decisions_count += 1
             self.decision_last_ts = time.time()
@@ -401,7 +431,14 @@ class BotRuntime:
                     "action": _map_action_for_db(decision.action),
                     "confidence": decision.confidence,
                     "reason_code": decision.reason_code,
-                    "reason_details": {"policy": "default", "edge": decision.edge, "streak": streak},
+                    "reason_details": {
+                        "policy": "default",
+                        "edge": decision.edge,
+                        "streak": streak,
+                        "effective_min_confidence": decision.effective_min_confidence,
+                        "threshold_relaxed": decision.threshold_relaxed,
+                        "reversal_imminent": indicators.get("reversal_imminent") is True,
+                    },
                     "indicator_snapshot": indicators,
                     "risk_snapshot": {
                         "filled_up": self.exposure_filled_usdc["UP"],
@@ -417,6 +454,7 @@ class BotRuntime:
                 down_exposure += self.exposure_open_usdc["DOWN"]
 
             now_ms = int(time.time() * 1000)
+            reversal_imminent = indicators.get("reversal_imminent") is True
             if decision.action == DecisionAction.BUY_UP and up_ask > 0:
                 gate = evaluate_entry_policy(
                     EntryPolicyInput(
@@ -448,7 +486,21 @@ class BotRuntime:
                             "price": up_ask,
                             "confidence": decision.confidence,
                             "reason_code": decision.reason_code,
+                            "reversal_imminent": reversal_imminent,
                         }
+                    )
+                elif reversal_imminent:
+                    # Reversal observability: emit explicit block reasons without
+                    # changing baseline entry filters.
+                    await self.writer.enqueue_runtime_event(
+                        run_id,
+                        "warn",
+                        "reversal_entry_blocked",
+                        {
+                            "reason_code": _map_reversal_block_reason(gate.reason_code),
+                            "source_reason": gate.reason_code,
+                            "side": "UP",
+                        },
                     )
             elif decision.action == DecisionAction.BUY_DOWN and down_ask > 0:
                 gate = evaluate_entry_policy(
@@ -481,6 +533,7 @@ class BotRuntime:
                             "price": down_ask,
                             "confidence": decision.confidence,
                             "reason_code": decision.reason_code,
+                            "reversal_imminent": reversal_imminent,
                         }
                     )
 
@@ -492,7 +545,7 @@ class BotRuntime:
                             "side": "UP",
                             "price": max(up_bid, self.cfg.take_profit_limit_price),
                             "confidence": 1.0,
-                            "reason_code": "take_profit_trigger",
+                            "reason_code": "take_profit_95c_discipline",
                         }
                     )
                 if self.exposure_filled_usdc["DOWN"] > 0 and down_bid >= self.cfg.take_profit_trigger_price:
@@ -502,7 +555,7 @@ class BotRuntime:
                             "side": "DOWN",
                             "price": max(down_bid, self.cfg.take_profit_limit_price),
                             "confidence": 1.0,
-                            "reason_code": "take_profit_trigger",
+                            "reason_code": "take_profit_95c_discipline",
                         }
                     )
 
@@ -517,6 +570,8 @@ class BotRuntime:
                 action_type = str(intent["type"])
                 price = float(intent["price"])
                 confidence = float(intent["confidence"])
+                reversal_imminent = bool(intent.get("reversal_imminent", False))
+                reason_code = str(intent.get("reason_code", ""))
 
                 current_exposure = self.exposure_filled_usdc[side]
                 if self.cfg.count_open_orders_in_exposure:
@@ -531,13 +586,35 @@ class BotRuntime:
                         max_single_wager_usdc=self.cfg.max_single_wager_usdc,
                         min_wager_usdc=self.cfg.min_wager_usdc,
                         min_shares_per_purchase=self.cfg.min_shares_per_purchase,
+                        reversal_imminent=reversal_imminent,
+                        enable_convexity_budget_reservation=self.cfg.enable_convexity_budget_reservation,
                     )
+                    if size.throttle_applied:
+                        await self.writer.enqueue_runtime_event(
+                            run_id,
+                            "info",
+                            "convexity_budget_throttle",
+                            {
+                                "reason_code": "expensive_entry_throttled_to_preserve_convexity_budget",
+                                "side": side,
+                                "price": price,
+                                "throttle_cap_usdc": size.throttle_cap_usdc,
+                            },
+                        )
                     if not size.allowed:
+                        reason_code = _map_reversal_block_reason(size.reason_code) if reversal_imminent else size.reason_code
+                        if reversal_imminent:
+                            await self.writer.enqueue_runtime_event(
+                                run_id,
+                                "warn",
+                                "reversal_entry_blocked",
+                                {"reason_code": reason_code, "source_reason": size.reason_code, "side": side},
+                            )
                         await self.writer.enqueue_runtime_event(
                             run_id,
                             "warn",
                             "risk_reject",
-                            {"side": side, "reason": size.reason_code},
+                            {"side": side, "reason": reason_code},
                         )
                         continue
 
@@ -558,11 +635,43 @@ class BotRuntime:
                     )
                     risk_decision = validate_order(candidate, risk)
                     if not risk_decision.allowed:
+                        base_reason = (
+                            "entry_blocked_price_too_high"
+                            if risk_decision.reason_code == "price_cap"
+                            else risk_decision.reason_code
+                        )
+                        if risk_decision.reason_code == "price_cap":
+                            await self.writer.enqueue_runtime_event(
+                                run_id,
+                                "warn",
+                                "entry_blocked",
+                                {
+                                    "reason_code": "entry_blocked_price_too_high",
+                                    "side": side,
+                                    "price": price,
+                                },
+                            )
+                        reason_code = (
+                            _map_reversal_block_reason(risk_decision.reason_code)
+                            if reversal_imminent
+                            else base_reason
+                        )
+                        if reversal_imminent:
+                            await self.writer.enqueue_runtime_event(
+                                run_id,
+                                "warn",
+                                "reversal_entry_blocked",
+                                {
+                                    "reason_code": reason_code,
+                                    "source_reason": risk_decision.reason_code,
+                                    "side": side,
+                                },
+                            )
                         await self.writer.enqueue_runtime_event(
                             run_id,
                             "warn",
                             "risk_reject",
-                            {"side": side, "reason": risk_decision.reason_code},
+                            {"side": side, "reason": reason_code},
                         )
                         continue
 
@@ -577,6 +686,7 @@ class BotRuntime:
                         action="ENTRY",
                         payload=payload,
                         wager_usdc=size.wager_usdc,
+                        reason_code=reason_code,
                         trading_client=trading_client,
                     )
                 else:
@@ -595,6 +705,7 @@ class BotRuntime:
                         action="TAKE_PROFIT",
                         payload=payload,
                         wager_usdc=price * shares,
+                        reason_code=reason_code or "take_profit_95c_discipline",
                         trading_client=trading_client,
                         is_sell=True,
                     )
@@ -658,6 +769,7 @@ class BotRuntime:
         action: str,
         payload: dict[str, Any],
         wager_usdc: float,
+        reason_code: str,
         trading_client: TradingClient,
         is_sell: bool = False,
     ) -> None:
@@ -691,7 +803,7 @@ class BotRuntime:
                     "shares": payload["shares"],
                     "wager_usdc": wager_usdc,
                     "status": "filled",
-                    "metadata": {"mode": "dry_run", "action": action},
+                    "metadata": {"mode": "dry_run", "action": action, "reason_code": reason_code},
                 },
             )
             self.order_records.append(
@@ -703,6 +815,7 @@ class BotRuntime:
                     wager_usdc=wager_usdc,
                     status="filled",
                     ts=datetime.now(tz=timezone.utc).isoformat(),
+                    reason_code=reason_code,
                 )
             )
             self._record_order_activity(
@@ -747,6 +860,7 @@ class BotRuntime:
                 price=float(payload["price"]),
                 shares=float(payload["shares"]),
                 wager_usdc=wager_usdc,
+                reason_code=reason_code,
                 created_at=time.time(),
             )
 
@@ -763,7 +877,7 @@ class BotRuntime:
                 "shares": payload["shares"],
                 "wager_usdc": wager_usdc,
                 "status": "submitted",
-                "metadata": {"exchange_resp": exchange_resp},
+                "metadata": {"exchange_resp": exchange_resp, "reason_code": reason_code},
             },
         )
         self.order_records.append(
@@ -775,6 +889,7 @@ class BotRuntime:
                 wager_usdc=wager_usdc,
                 status="submitted",
                 ts=datetime.now(tz=timezone.utc).isoformat(),
+                reason_code=reason_code,
             )
         )
         self._record_order_activity(
@@ -818,7 +933,11 @@ class BotRuntime:
                     "shares": open_order.shares,
                     "wager_usdc": open_order.wager_usdc,
                     "status": "filled",
-                    "metadata": {"source_status": status, "phase": "reconcile"},
+                    "metadata": {
+                        "source_status": status,
+                        "phase": "reconcile",
+                        "reason_code": open_order.reason_code,
+                    },
                 },
             )
             self.order_records.append(
@@ -830,6 +949,7 @@ class BotRuntime:
                     wager_usdc=open_order.wager_usdc,
                     status="filled",
                     ts=datetime.now(tz=timezone.utc).isoformat(),
+                    reason_code=open_order.reason_code,
                 )
             )
             self._record_order_activity(
@@ -902,12 +1022,29 @@ def _map_action_for_db(action: DecisionAction) -> str:
     return mapping[action]
 
 
-def _compact_indicator_snapshot(indicators: dict[str, float | None]) -> dict[str, float | None]:
-    compact: dict[str, float | None] = {}
+def _compact_indicator_snapshot(indicators: dict[str, IndicatorValue]) -> dict[str, IndicatorValue]:
+    compact: dict[str, IndicatorValue] = {}
     for key in _INDICATOR_ACTIVITY_KEYS:
-        value = _to_float(indicators.get(key))
+        raw = indicators.get(key)
+        if isinstance(raw, bool):
+            compact[key] = raw
+            continue
+        value = _to_float(raw)
         compact[key] = None if value is None else round(value, 6)
     return compact
+
+
+def _map_reversal_block_reason(reason: str) -> str:
+    mapping = {
+        "signal_not_persistent": "reversal_detected_but_streak_not_satisfied",
+        "entry_cooldown": "reversal_detected_but_cooldown_active",
+        "side_budget_exhausted": "reversal_detected_but_budget_exhausted",
+        "below_min_wager": "reversal_detected_but_budget_exhausted",
+        "side_budget": "reversal_detected_but_exposure_limit",
+        "cannot_satisfy_min_shares": "reversal_detected_but_budget_exhausted",
+        "price_cap": "reversal_detected_but_price_cap_exceeded",
+    }
+    return mapping.get(reason, f"reversal_detected_but_{reason}")
 
 
 def _to_float(value: Any) -> float | None:

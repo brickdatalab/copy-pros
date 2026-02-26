@@ -26,6 +26,8 @@ class DecisionResult:
     confidence: float
     edge: float
     reason_code: str
+    effective_min_confidence: float
+    threshold_relaxed: bool
 
 
 def blend_weights(local_weight: float, external_weight: float) -> WeightBlend:
@@ -43,7 +45,14 @@ class DecisionPolicy:
         self._min_confidence = min_confidence
         self._min_edge = min_edge
 
-    def decide(self, indicators: dict[str, float | None], remaining_sec: int) -> DecisionResult:
+    def decide(
+        self,
+        indicators: dict[str, float | bool | None],
+        remaining_sec: int,
+        *,
+        candidate_up_price: float | None = None,
+        candidate_down_price: float | None = None,
+    ) -> DecisionResult:
         imbalance = float(indicators.get("order_imbalance") or 0.0)
         mid_momentum = float(indicators.get("mid_momentum_30s") or 0.0)
         spread_momentum = float(indicators.get("spread_momentum_30s") or 0.0)
@@ -75,12 +84,29 @@ class DecisionPolicy:
         confidence = min(max(max_score, 0.0), 1.0)
 
         edge = min(abs(up_score - down_score), 1.0)
-        if confidence < self._min_confidence:
+        candidate_action = DecisionAction.BUY_UP if up_score >= down_score else DecisionAction.BUY_DOWN
+        reversal_imminent = indicators.get("reversal_imminent") is True
+        effective_min_confidence = self._min_confidence
+        threshold_relaxed = False
+        # Reversal layer: selectively relax BUY_UP confidence when setup is
+        # distressed and the candidate entry price remains below 0.25.
+        if (
+            reversal_imminent
+            and candidate_action == DecisionAction.BUY_UP
+            and candidate_up_price is not None
+            and candidate_up_price < 0.25
+        ):
+            effective_min_confidence = 0.40
+            threshold_relaxed = True
+
+        if confidence < effective_min_confidence:
             return DecisionResult(
                 action=DecisionAction.HOLD,
                 confidence=confidence,
                 edge=edge,
                 reason_code="weak_signal",
+                effective_min_confidence=effective_min_confidence,
+                threshold_relaxed=threshold_relaxed,
             )
 
         if edge < self._min_edge:
@@ -89,19 +115,25 @@ class DecisionPolicy:
                 confidence=confidence,
                 edge=edge,
                 reason_code="low_edge",
+                effective_min_confidence=effective_min_confidence,
+                threshold_relaxed=threshold_relaxed,
             )
 
-        if up_score >= down_score:
+        if candidate_action == DecisionAction.BUY_UP:
             return DecisionResult(
                 action=DecisionAction.BUY_UP,
                 confidence=confidence,
                 edge=edge,
-                reason_code="bullish_alignment",
+                reason_code="bullish_reversal_setup" if threshold_relaxed else "momentum_alignment_entry",
+                effective_min_confidence=effective_min_confidence,
+                threshold_relaxed=threshold_relaxed,
             )
 
         return DecisionResult(
             action=DecisionAction.BUY_DOWN,
             confidence=confidence,
             edge=edge,
-            reason_code="bearish_alignment",
+            reason_code="momentum_alignment_entry",
+            effective_min_confidence=effective_min_confidence,
+            threshold_relaxed=False,
         )

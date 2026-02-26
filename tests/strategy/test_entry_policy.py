@@ -102,3 +102,45 @@ def test_anchor_side_prevents_symmetric_tie_bypass() -> None:
     )
     assert decision.allowed is False
     assert decision.reason_code == "hedge_confidence"
+
+
+def test_reversal_like_setup_still_requires_streak_and_cooldown() -> None:
+    blocked_by_streak = evaluate_entry_policy(
+        _base_input(
+            side="UP",
+            confidence=0.41,
+            price=0.20,
+            signal_streak=3,
+            min_signal_streak=4,
+        )
+    )
+    assert blocked_by_streak.allowed is False
+    assert blocked_by_streak.reason_code == "signal_not_persistent"
+
+    blocked_by_cooldown = evaluate_entry_policy(
+        _base_input(
+            side="UP",
+            confidence=0.41,
+            price=0.20,
+            signal_streak=4,
+            min_signal_streak=4,
+            last_entry_emit_ms=9_600,
+            now_ms=10_000,
+            entry_cooldown_ms=750,
+        )
+    )
+    assert blocked_by_cooldown.allowed is False
+    assert blocked_by_cooldown.reason_code == "entry_cooldown"
+
+    allowed = evaluate_entry_policy(
+        _base_input(
+            side="UP",
+            confidence=0.41,
+            price=0.20,
+            signal_streak=4,
+            min_signal_streak=4,
+            last_entry_emit_ms=0,
+        )
+    )
+    assert allowed.allowed is True
+    assert allowed.reason_code == "ok"

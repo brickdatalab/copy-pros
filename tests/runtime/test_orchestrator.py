@@ -2,7 +2,11 @@ from rich.console import Console
 
 from trader.adapters.supabase.writer import BufferedSupabaseWriter
 from trader.config import TraderConfig
-from trader.runtime.orchestrator import BotRuntime, compute_target_runtime_seconds
+from trader.runtime.orchestrator import (
+    BotRuntime,
+    _map_reversal_block_reason,
+    compute_target_runtime_seconds,
+)
 from trader.ui.console import BotConsole
 
 
@@ -66,3 +70,10 @@ def test_bot_runtime_activity_snapshot_reflects_runtime_fields() -> None:
     assert snap["order_count"] == 2
     assert snap["fill_count"] == 1
     assert snap["last_order_status"] == "filled"
+
+
+def test_reversal_block_reason_mapping() -> None:
+    assert _map_reversal_block_reason("entry_cooldown") == "reversal_detected_but_cooldown_active"
+    assert _map_reversal_block_reason("signal_not_persistent") == "reversal_detected_but_streak_not_satisfied"
+    assert _map_reversal_block_reason("side_budget_exhausted") == "reversal_detected_but_budget_exhausted"
+    assert _map_reversal_block_reason("price_cap") == "reversal_detected_but_price_cap_exceeded"

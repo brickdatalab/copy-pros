@@ -10,6 +10,13 @@ This project is built for parallel event execution with strict risk controls, de
 
 The bot is designed around one question per event: `UP` or `DOWN`. It places **limit orders only**.
 
+## Operating Philosophy
+
+- Canonical philosophy: `docs/OPERATING_PHILOSOPHY.md`
+- Convexity-first under distressed pricing (share-aware sizing in reversal setups)
+- 95-cent discipline (`0.94` trigger, `0.95` exit) to avoid late expiry flips
+- Optimize for payoff quality (expectancy/profit factor), not raw win rate alone
+
 ## Runtime Spec
 
 ### Supported markets
@@ -29,6 +36,7 @@ The bot is designed around one question per event: `UP` or `DOWN`. It places **l
 - Generates deterministic signals (`BUY_UP`, `BUY_DOWN`, `HOLD`).
 - Applies entry gating + risk checks before any order submission.
 - Tracks runs, decisions, orders, and runtime events asynchronously to Supabase.
+- Emits structured reason codes for entries/exits and run analytics.
 
 ## Architecture
 
@@ -115,6 +123,10 @@ Computed in `trader/engine/indicators/__init__.py` from rolling windows in `trad
 - `mid_momentum_30s`: relative change in mid price versus ~30s lookback.
 - `mid_momentum_1m`: relative change in mid price versus ~60s lookback.
 - `mid_price`: current UP book midpoint.
+- `reversal_imminent`: bullish distressed accumulation flag.
+- `vwap_delta_15s`: current `vwap_30s` minus value 15s ago.
+- `mid_delta_15s`: current `mid_price` minus value 15s ago.
+- `momentum_delta_5s`: current `mid_momentum_30s` minus value 5s ago.
 
 Rolling history windows are kept to 300 seconds and pruned continuously.
 
@@ -153,6 +165,19 @@ Decision thresholds:
 - `HOLD` when `confidence < MIN_SIGNAL_CONFIDENCE` (default `0.52`)
 - `HOLD` when `edge < MIN_SIGNAL_EDGE` (default `0.10`)
 - Else choose side by larger score.
+
+Reversal confidence relaxation (additive, bullish-only):
+
+- Effective min confidence becomes `0.40` only when:
+  - `reversal_imminent == true`
+  - candidate action is `BUY_UP`
+  - candidate UP entry price `< 0.25`
+- Otherwise confidence floor remains `0.52`.
+
+Entry reason codes:
+
+- `momentum_alignment_entry`
+- `bullish_reversal_setup`
 
 ## Fill vs No-Fill Decision Tree
 
@@ -205,10 +230,12 @@ Execution path (`trader/runtime/orchestrator.py`):
 
 - Entry intents (`ENTRY`) become `BUY_UP` or `BUY_DOWN` limit orders.
 - Take-profit intents (`TAKE_PROFIT`) become `SELL_UP` or `SELL_DOWN` limit orders.
+- Take-profit reason code is `take_profit_95c_discipline`.
 - In `dry_run`, entries and exits are recorded as filled instantly.
 - In `live`, open orders are reconciled via `get_order`.
 - Cancel heuristic (`trader/execution/cancel_replace.py`):
   - cancel if order age `>= 2s`, `spread_momentum_30s > 0.15`, and `mid_momentum_30s < -0.05`.
+- High-price entry blocks emit `entry_blocked_price_too_high`.
 
 ## Risk, Limits, and Constraints
 
@@ -223,6 +250,14 @@ Default constraints:
 - `MIN_SHARES_PER_PURCHASE=5`
 - `ALLOW_BOTH_SIDES=true`
 - `COUNT_OPEN_ORDERS_IN_EXPOSURE=true`
+- `ENABLE_CONVEXITY_BUDGET_RESERVATION=false` (default OFF)
+
+Optional convexity reservation throttle (only when enabled):
+
+- if `entry_price >= 0.60`: cap per-entry wager to `$2`
+- if `0.50 <= entry_price < 0.60`: cap per-entry wager to `$4`
+- else: no throttle cap (use baseline sizing)
+- throttle event logs: `expensive_entry_throttled_to_preserve_convexity_budget`
 
 Take-profit defaults:
 
@@ -250,6 +285,11 @@ Cadence defaults:
   - `q` to stop
 - Writes final run report JSON to `runtime-logs/`.
 - Continuously attempts to resolve pending outcomes and updates rollups.
+- Emits wallet-level performance summaries including:
+  - realized PnL (total and per market)
+  - win rate, average win, average loss, profit factor
+  - reason-code grouped entry counts and attributed PnL
+  - open orders/open positions and per-side budget usage metrics
 
 ## Local Playground (localhost UI)
 

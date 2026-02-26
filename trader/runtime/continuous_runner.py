@@ -51,6 +51,7 @@ class EventOrder:
     wager_usdc: float
     status: str = "filled"
     ts: str | None = None
+    reason_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -492,11 +493,17 @@ class ContinuousRunner:
         report_dir = Path("runtime-logs")
         report_dir.mkdir(parents=True, exist_ok=True)
         report_path = report_dir / f"continuous_report_{datetime.now(tz=timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
+        earnings = _build_earnings_payload(
+            completed_runs=self.completed_runs,
+            worker_states=self.worker_states,
+            active_runtimes=self.active_runtimes,
+        )
         payload: dict[str, Any] = {
             "generated_at": datetime.now(tz=timezone.utc).isoformat(),
             "markets": [spec.key for spec in self.cfg.specs],
             "mode": self.cfg.mode,
             "duration_minutes": self.cfg.duration_minutes,
+            "wallet_summary": earnings["totals"],
             "runs": [
                 {
                     "market_key": run.market_key,
@@ -513,6 +520,7 @@ class ContinuousRunner:
                             "wager_usdc": order.wager_usdc,
                             "status": order.status,
                             "ts": order.ts,
+                            "reason_code": order.reason_code,
                         }
                         for order in run.orders
                     ],
@@ -527,6 +535,12 @@ class ContinuousRunner:
         if not self.enable_status_table:
             return
         rollups = aggregate_market_results(self.completed_runs)
+        earnings = _build_earnings_payload(
+            completed_runs=self.completed_runs,
+            worker_states=self.worker_states,
+            active_runtimes=self.active_runtimes,
+        )
+        totals = earnings["totals"]
         table = Table(title="Final Continuous Run Summary")
         table.add_column("Market")
         table.add_column("Events", justify="right")
@@ -547,6 +561,14 @@ class ContinuousRunner:
                 f"{item.down.avg_buy_price:.3f}",
             )
         self.console.print(table)
+        self.console.print(
+            "[cyan]Wallet summary:[/cyan] "
+            f"realized_pnl={totals['resolved_pnl_usdc']:.3f} "
+            f"win_rate={totals['win_rate']:.3f} "
+            f"avg_win={totals['average_win_usdc']:.3f} "
+            f"avg_loss={totals['average_loss_usdc']:.3f} "
+            f"profit_factor={totals['profit_factor']}"
+        )
         self.console.print(f"[cyan]Report written:[/cyan] {report_path}")
 
     async def _emit_status_update(self) -> None:
@@ -613,6 +635,63 @@ def _build_earnings_payload(
     lost = sum(max(-float(row.get("pnl_usdc", 0.0) or 0.0), 0.0) for row in resolved_rows)
     accurate = sum(1 for row in resolved_rows if row.get("was_prediction_accurate") is True)
     inaccurate = sum(1 for row in resolved_rows if row.get("was_prediction_accurate") is False)
+    total_scored = accurate + inaccurate
+    win_rate = (accurate / total_scored) if total_scored > 0 else 0.0
+    win_values = [float(row.get("pnl_usdc", 0.0) or 0.0) for row in resolved_rows if float(row.get("pnl_usdc", 0.0) or 0.0) > 0]
+    loss_values = [-float(row.get("pnl_usdc", 0.0) or 0.0) for row in resolved_rows if float(row.get("pnl_usdc", 0.0) or 0.0) < 0]
+    avg_win = (sum(win_values) / len(win_values)) if win_values else 0.0
+    avg_loss = (sum(loss_values) / len(loss_values)) if loss_values else 0.0
+    profit_factor = (sum(win_values) / sum(loss_values)) if loss_values else None
+
+    per_market_realized_pnl: dict[str, float] = {}
+    for row in resolved_rows:
+        market_key = str(row.get("market_key", ""))
+        per_market_realized_pnl[market_key] = per_market_realized_pnl.get(market_key, 0.0) + float(
+            row.get("pnl_usdc", 0.0) or 0.0
+        )
+
+    reason_code_breakdown: dict[str, dict[str, float | int]] = {}
+    completed_by_slug = {entry.event_slug: entry for entry in completed_runs}
+    for row in resolved_rows:
+        slug = str(row.get("event_slug", ""))
+        run_entry = completed_by_slug.get(slug)
+        if run_entry is None:
+            continue
+        event_pnl = float(row.get("pnl_usdc", 0.0) or 0.0)
+        reason_wagers: dict[str, float] = {}
+        reason_entries: dict[str, int] = {}
+        for order in run_entry.orders:
+            if not order.action.startswith("BUY"):
+                continue
+            reason = order.reason_code or "unlabeled_entry"
+            reason_wagers[reason] = reason_wagers.get(reason, 0.0) + max(order.wager_usdc, 0.0)
+            reason_entries[reason] = reason_entries.get(reason, 0) + 1
+        total_reason_wager = sum(reason_wagers.values())
+        for reason, wager in reason_wagers.items():
+            bucket = reason_code_breakdown.setdefault(
+                reason,
+                {"entries": 0, "buy_wager_usdc": 0.0, "attributed_pnl_usdc": 0.0},
+            )
+            bucket["entries"] = int(bucket["entries"]) + reason_entries.get(reason, 0)
+            bucket["buy_wager_usdc"] = float(bucket["buy_wager_usdc"]) + wager
+            pnl_share = (wager / total_reason_wager) if total_reason_wager > 0 else 0.0
+            bucket["attributed_pnl_usdc"] = float(bucket["attributed_pnl_usdc"]) + (event_pnl * pnl_share)
+
+    open_orders_count = sum(len(getattr(runtime, "open_orders", {})) for runtime in active_runtimes.values())
+    open_position_sides_count = 0
+    total_open_up_exposure = 0.0
+    total_open_down_exposure = 0.0
+    total_budget_limit = 0.0
+    for runtime in active_runtimes.values():
+        filled = getattr(runtime, "exposure_filled_usdc", {"UP": 0.0, "DOWN": 0.0})
+        open_exp = getattr(runtime, "exposure_open_usdc", {"UP": 0.0, "DOWN": 0.0})
+        cfg = getattr(runtime, "cfg", None)
+        open_position_sides_count += int(float(filled.get("UP", 0.0)) > 0)
+        open_position_sides_count += int(float(filled.get("DOWN", 0.0)) > 0)
+        total_open_up_exposure += float(filled.get("UP", 0.0)) + float(open_exp.get("UP", 0.0))
+        total_open_down_exposure += float(filled.get("DOWN", 0.0)) + float(open_exp.get("DOWN", 0.0))
+        if cfg is not None:
+            total_budget_limit += float(getattr(cfg, "max_wager_per_side_usdc", 0.0))
 
     return {
         "totals": {
@@ -626,8 +705,34 @@ def _build_earnings_payload(
             "resolved_pnl_usdc": round(resolved_pnl, 6),
             "gained_usdc": round(gained, 6),
             "lost_usdc": round(lost, 6),
+            "win_rate": round(win_rate, 6),
+            "average_win_usdc": round(avg_win, 6),
+            "average_loss_usdc": round(avg_loss, 6),
+            "profit_factor": None if profit_factor is None else round(profit_factor, 6),
             "total_wagered_usdc": round(sum(float(row.get("wagered_usdc", 0.0) or 0.0) for row in event_rows), 6),
             "order_rows": len(order_rows),
+            "per_market_realized_pnl_usdc": {
+                key: round(value, 6) for key, value in sorted(per_market_realized_pnl.items())
+            },
+            "reason_code_breakdown": {
+                code: {
+                    "entries": int(values["entries"]),
+                    "buy_wager_usdc": round(float(values["buy_wager_usdc"]), 6),
+                    "attributed_pnl_usdc": round(float(values["attributed_pnl_usdc"]), 6),
+                }
+                for code, values in sorted(reason_code_breakdown.items())
+            },
+            "open_orders_count": open_orders_count,
+            "open_position_sides_count": open_position_sides_count,
+            "open_up_exposure_usdc": round(total_open_up_exposure, 6),
+            "open_down_exposure_usdc": round(total_open_down_exposure, 6),
+            "per_side_budget_usage": {
+                "up_ratio": round((total_open_up_exposure / total_budget_limit), 6) if total_budget_limit > 0 else 0.0,
+                "down_ratio": (
+                    round((total_open_down_exposure / total_budget_limit), 6) if total_budget_limit > 0 else 0.0
+                ),
+                "total_budget_limit_usdc": round(total_budget_limit, 6),
+            },
         },
         "events": event_rows,
         "orders": order_rows,
@@ -674,6 +779,7 @@ def _build_event_and_orders(
             "shares": order.shares,
             "wager_usdc": order.wager_usdc,
             "status": order.status,
+            "reason_code": order.reason_code,
         }
         for order in run.orders
     ]
@@ -735,6 +841,7 @@ def _runtime_orders(runtime: BotRuntime) -> list[EventOrder]:
                 wager_usdc=_safe_float(getattr(record, "wager_usdc", 0.0)),
                 status=str(getattr(record, "status", "submitted")),
                 ts=str(getattr(record, "ts", "")) or None,
+                reason_code=str(getattr(record, "reason_code", "")) or None,
             )
         )
     return rows
@@ -802,6 +909,7 @@ def _to_event_run_summary(market_key: str, result: EventRunResult) -> EventRunSu
                 wager_usdc=order.wager_usdc,
                 status=order.status,
                 ts=order.ts,
+                reason_code=order.reason_code,
             )
             for order in result.orders
             if order.status in {"filled", "submitted"}
