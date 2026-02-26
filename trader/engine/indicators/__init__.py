@@ -60,6 +60,8 @@ class IndicatorEngine:
             else None
         )
 
+        # Smart-money reversal marker: only emits when all distressed bullish
+        # accumulation conditions pass on the same tick.
         reversal_imminent = False
         if self.enable_reversal_imminent:
             distressed = mid_price < 0.25

@@ -33,6 +33,8 @@ def propose_order_size(
     confidence = min(max(target_confidence, 0.0), 1.0)
     upper = min(available_side, max_single_wager_usdc)
     if reversal_imminent:
+        # Convexity mode: target shares first (monotone by confidence), then
+        # derive wager from shares*price while preserving existing risk caps.
         max_affordable_shares = math.floor((upper / price) * 1000) / 1000
         if max_affordable_shares < min_shares_per_purchase:
             return SizeProposal(False, 0.0, 0.0, "cannot_satisfy_min_shares")

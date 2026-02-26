@@ -88,6 +88,8 @@ class DecisionPolicy:
         reversal_imminent = indicators.get("reversal_imminent") is True
         effective_min_confidence = self._min_confidence
         threshold_relaxed = False
+        # Reversal layer: selectively relax BUY_UP confidence when setup is
+        # distressed and the candidate entry price remains below 0.25.
         if (
             reversal_imminent
             and candidate_action == DecisionAction.BUY_UP

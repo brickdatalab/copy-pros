@@ -475,6 +475,8 @@ class BotRuntime:
                         }
                     )
                 elif reversal_imminent:
+                    # Reversal observability: emit explicit block reasons without
+                    # changing baseline entry filters.
                     await self.writer.enqueue_runtime_event(
                         run_id,
                         "warn",
