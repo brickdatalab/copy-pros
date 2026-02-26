@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from pathlib import Path
 from typing import AsyncIterator, Literal
 
 from fastapi import FastAPI, HTTPException
@@ -20,6 +21,7 @@ from trader.runtime.continuous_runner import (
 )
 
 DEFAULT_MARKETS: list[str] = ["btc15", "eth15", "sol15", "btc5", "eth5", "sol5"]
+PLAYGROUND_UI_PATH = Path(__file__).resolve().parents[2] / "playground-mock.html"
 
 
 class StartSessionRequest(BaseModel):
@@ -188,6 +190,8 @@ app = FastAPI(title="Copy Pros Local Playground", version="0.1.0")
 
 @app.get("/", response_class=HTMLResponse)
 async def home() -> str:
+    if PLAYGROUND_UI_PATH.exists():
+        return PLAYGROUND_UI_PATH.read_text(encoding="utf-8")
     return _PLAYGROUND_HTML
 
 

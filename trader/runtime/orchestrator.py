@@ -85,6 +85,7 @@ def empty_runtime_activity_snapshot() -> dict[str, Any]:
         "open_down_exposure_usdc": 0.0,
         "side_budget_limit_usdc": 0.0,
         "open_position_sides_count": 0,
+        "position_rollup": {"UP": None, "DOWN": None},
         "indicators": {key: None for key in _INDICATOR_ACTIVITY_KEYS},
     }
 
@@ -156,6 +157,7 @@ class BotRuntime:
     open_orders: dict[str, OpenOrder] = field(default_factory=dict)
     exposure_filled_usdc: dict[str, float] = field(default_factory=lambda: {"UP": 0.0, "DOWN": 0.0})
     exposure_open_usdc: dict[str, float] = field(default_factory=lambda: {"UP": 0.0, "DOWN": 0.0})
+    filled_shares: dict[str, float] = field(default_factory=lambda: {"UP": 0.0, "DOWN": 0.0})
     anchor_side: str | None = None
     last_signal_action: DecisionAction | None = None
     signal_action_streak: int = 0
@@ -217,6 +219,7 @@ class BotRuntime:
                 "side_budget_limit_usdc": self.cfg.max_wager_per_side_usdc,
                 "open_position_sides_count": int(self.exposure_filled_usdc["UP"] > 0)
                 + int(self.exposure_filled_usdc["DOWN"] > 0),
+                "position_rollup": self._position_rollup_snapshot(),
                 "indicators": _compact_indicator_snapshot(
                     self.last_indicator_snapshot if self.last_indicator_snapshot else self.indicators
                 ),
@@ -955,9 +958,11 @@ class BotRuntime:
             )
             if not is_sell:
                 self.exposure_filled_usdc[side] += wager_usdc
+                self.filled_shares[side] += float(payload["shares"])
                 self.fills_count += 1
             else:
                 self.exposure_filled_usdc[side] = max(0.0, self.exposure_filled_usdc[side] - wager_usdc)
+                self.filled_shares[side] = max(0.0, self.filled_shares[side] - float(payload["shares"]))
                 self.fills_count += 1
 
             await self.writer.enqueue(
@@ -1120,6 +1125,7 @@ class BotRuntime:
                 self.exposure_open_usdc[open_order.side] - open_order.wager_usdc,
             )
             self.exposure_filled_usdc[open_order.side] += open_order.wager_usdc
+            self.filled_shares[open_order.side] += open_order.shares
             self.fills_count += 1
 
             await self.writer.enqueue(
@@ -1213,6 +1219,20 @@ class BotRuntime:
         self.last_order_shares = shares
         self.last_order_status = status
         self.last_order_ts = time.time()
+
+    def _position_rollup_snapshot(self) -> dict[str, dict[str, float] | None]:
+        rollup: dict[str, dict[str, float] | None] = {"UP": None, "DOWN": None}
+        for side in ("UP", "DOWN"):
+            shares = max(0.0, self.filled_shares[side])
+            total_wager = max(0.0, self.exposure_filled_usdc[side])
+            if shares <= 0 or total_wager <= 0:
+                continue
+            rollup[side] = {
+                "shares": round(shares, 6),
+                "avg_price": round(total_wager / shares, 6),
+                "total_wager": round(total_wager, 6),
+            }
+        return rollup
 
 
 def _map_action_for_db(action: DecisionAction) -> str:

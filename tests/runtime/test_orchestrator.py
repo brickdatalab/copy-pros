@@ -36,6 +36,7 @@ def test_bot_runtime_activity_snapshot_defaults() -> None:
     assert snap["order_count"] == 0
     assert snap["fill_count"] == 0
     assert snap["decision_last_action"] is None
+    assert snap["position_rollup"] == {"UP": None, "DOWN": None}
     assert isinstance(snap["indicators"], dict)
 
 
@@ -142,3 +143,45 @@ def test_submit_order_preserves_entry_signal_snapshot_in_order_record() -> None:
 
     assert len(runtime.order_records) == 1
     assert runtime.order_records[0].entry_signal_snapshot == snapshot
+    rollup = runtime.activity_snapshot()["position_rollup"]
+    assert rollup["UP"]["shares"] == 5.0
+    assert rollup["UP"]["avg_price"] == 0.2
+    assert rollup["UP"]["total_wager"] == 1.0
+
+
+def test_position_rollup_clears_after_full_sell_fill() -> None:
+    runtime = BotRuntime(
+        cfg=TraderConfig(poly_event_input="btc-updown-5m-0", bot_mode="dry_run"),
+        console=BotConsole(console=Console(stderr=True, quiet=True)),
+        writer=BufferedSupabaseWriter(enabled=False),
+    )
+
+    asyncio.run(
+        runtime._submit_order(
+            run_id="run-1",
+            token_id="token-1",
+            side="UP",
+            action="ENTRY",
+            payload={"client_order_id": "buy-1", "price": 0.2, "shares": 10.0},
+            wager_usdc=2.0,
+            reason_code="momentum_alignment_entry",
+            trading_client=object(),
+        )
+    )
+
+    asyncio.run(
+        runtime._submit_order(
+            run_id="run-1",
+            token_id="token-1",
+            side="UP",
+            action="TAKE_PROFIT",
+            payload={"client_order_id": "sell-1", "price": 0.95, "shares": 10.0},
+            wager_usdc=9.5,
+            reason_code="take_profit_95c_discipline",
+            trading_client=object(),
+            is_sell=True,
+        )
+    )
+
+    rollup = runtime.activity_snapshot()["position_rollup"]
+    assert rollup["UP"] is None

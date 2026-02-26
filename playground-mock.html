@@ -1,0 +1,1395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Copy Pros — Mission Control</title>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.3.1/dist/fonts/geist-sans/style.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.3.1/dist/fonts/geist-mono/style.min.css" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #080c14;
+      --surface-0: #0c1120;
+      --surface-1: #111827;
+      --surface-2: #161f30;
+      --border: #1e293b;
+      --border-active: #334155;
+      --text: #f8fafc;
+      --text-dim: #94a3b8;
+      --text-muted: #64748b;
+      --green: #22c55e;
+      --green-dim: rgba(34,197,94,0.12);
+      --red: #ef4444;
+      --red-dim: rgba(239,68,68,0.1);
+      --amber: #f59e0b;
+      --amber-dim: rgba(245,158,11,0.1);
+      --gold: #eab308;
+      --blue: #3b82f6;
+      --cyan: #06b6d4;
+      --font-data: "Geist Mono", ui-monospace, monospace;
+      --font-ui: "Geist Sans", -apple-system, sans-serif;
+      --radius: 8px;
+      --radius-lg: 12px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-ui);
+      font-size: 13px;
+      line-height: 1.5;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Top Bar ── */
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 20px;
+      background: rgba(8,12,20,0.92);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .topbar-left {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .logo {
+      font-family: var(--font-data);
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--text);
+    }
+    .logo span { color: var(--gold); }
+    .session-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-family: var(--font-data);
+      font-size: 11px;
+      font-weight: 500;
+      padding: 4px 10px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      background: var(--surface-1);
+      color: var(--text-dim);
+    }
+    .session-badge.live {
+      border-color: var(--green);
+      color: var(--green);
+      background: var(--green-dim);
+    }
+    .session-badge.paused {
+      border-color: var(--amber);
+      color: var(--amber);
+      background: var(--amber-dim);
+    }
+    .session-badge.stopped {
+      border-color: var(--text-muted);
+      color: var(--text-muted);
+    }
+
+    /* Heartbeat pulse */
+    .pulse {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      animation: pulse-ring 1.8s ease-out infinite;
+    }
+    .pulse.dead { background: var(--text-muted); animation: none; }
+    .pulse.warn { background: var(--amber); }
+    @keyframes pulse-ring {
+      0% { box-shadow: 0 0 0 0 rgba(34,197,94,0.5); }
+      70% { box-shadow: 0 0 0 6px rgba(34,197,94,0); }
+      100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); }
+    }
+
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .topbar-clock {
+      font-family: var(--font-data);
+      font-size: 16px;
+      font-weight: 600;
+      color: #ffffff;
+      min-width: 80px;
+      text-align: right;
+      letter-spacing: -0.01em;
+    }
+
+    .topbar-center {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
+    .countdown-value {
+      font-family: var(--font-data);
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--text);
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+    .countdown-value.urgent { color: var(--red); }
+    .countdown-value.warning { color: var(--amber); }
+    .countdown-value.paused { opacity: 0.5; }
+    .countdown-value.stopped { color: var(--text-muted); }
+    .countdown-label {
+      font-family: var(--font-data);
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    /* ── Controls Strip ── */
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-0);
+    }
+    .control-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .control-group label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+    }
+    .control-group input,
+    .control-group select {
+      font-family: var(--font-data);
+      font-size: 12px;
+      background: var(--surface-1);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: var(--radius);
+      padding: 6px 8px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .control-group input:focus,
+    .control-group select:focus {
+      border-color: var(--gold);
+    }
+    .control-group input:disabled,
+    .control-group select:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+      border-color: var(--border);
+    }
+    .control-group input[type="number"] { width: 72px; }
+    .control-group select { width: 88px; }
+
+    .sep {
+      width: 1px;
+      height: 24px;
+      background: var(--border);
+      margin: 0 4px;
+    }
+
+    .market-toggles {
+      display: flex;
+      gap: 4px;
+    }
+    .market-toggle {
+      font-family: var(--font-data);
+      font-size: 12px;
+      font-weight: 600;
+      padding: 6px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--surface-1);
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.15s;
+      user-select: none;
+    }
+    .market-toggle.active {
+      border-color: var(--gold);
+      color: var(--gold);
+      background: rgba(234,179,8,0.08);
+    }
+    .market-toggle:hover { border-color: var(--border-active); }
+
+    .spacer { flex: 1; }
+
+    .btn {
+      font-family: var(--font-ui);
+      font-size: 12px;
+      font-weight: 600;
+      padding: 6px 14px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text);
+      cursor: pointer;
+      transition: all 0.15s;
+      letter-spacing: 0.01em;
+    }
+    .btn:hover { border-color: var(--border-active); background: var(--surface-1); transform: translateY(-1px); }
+    .btn:active { transform: translateY(0); }
+    .btn-start { border-color: var(--green); color: var(--green); background: var(--green-dim); }
+    .btn-start:hover { background: rgba(34,197,94,0.18); border-color: var(--green); }
+    .btn-stop { border-color: var(--red); color: var(--red); background: var(--red-dim); }
+    .btn-stop:hover { background: rgba(239,68,68,0.16); border-color: var(--red); }
+    .btn-toggle { padding: 8px 22px; font-size: 13px; min-width: 80px; }
+
+    /* ── KPI Strip ── */
+    .kpi-strip {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 1px;
+      background: var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+    .kpi {
+      background: var(--surface-0);
+      padding: 12px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .kpi-label {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+    }
+    .kpi-value {
+      font-family: var(--font-data);
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1.2;
+    }
+    .kpi-sub {
+      font-family: var(--font-data);
+      font-size: 10px;
+      color: var(--text-muted);
+    }
+    .kpi-value.positive { color: var(--green); }
+    .kpi-value.negative { color: var(--red); }
+    .kpi-value.neutral { color: var(--text-dim); }
+
+    /* ── Main Grid ── */
+    .main {
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      grid-template-rows: auto 1fr;
+      gap: 0;
+      min-height: calc(100vh - 220px);
+    }
+
+    /* ── Market Cards ── */
+    .market-grid {
+      grid-column: 1;
+      grid-row: 1 / -1;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      grid-template-rows: repeat(2, 1fr);
+      gap: 1px;
+      background: var(--border);
+      border-right: 1px solid var(--border);
+    }
+    .market-card {
+      background: var(--surface-0);
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      position: relative;
+      overflow: hidden;
+    }
+    .market-card::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: var(--border);
+      transition: background 0.3s;
+    }
+    .market-card.healthy::before { background: var(--green); }
+    .market-card.stale::before { background: var(--amber); }
+    .market-card.error::before { background: var(--red); }
+    .market-card.idle::before { background: var(--text-muted); }
+    .market-card.starting::before { background: var(--amber); animation: pulse-bar 1.2s ease-in-out infinite; }
+    @keyframes pulse-bar { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
+
+    .mc-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .mc-symbol {
+      font-family: var(--font-data);
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+    .mc-status {
+      font-family: var(--font-data);
+      font-size: 10px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .mc-status.running { background: var(--green-dim); color: var(--green); }
+    .mc-status.idle { background: rgba(100,116,139,0.12); color: var(--text-muted); }
+    .mc-status.error { background: var(--red-dim); color: var(--red); }
+    .mc-status.starting { background: var(--amber-dim); color: var(--amber); }
+
+    .mc-event {
+      font-family: var(--font-data);
+      font-size: 10px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .mc-pipeline {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+    }
+    .mc-pipe {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+    .mc-pipe-label {
+      font-size: 9px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+    }
+    .mc-pipe-value {
+      font-family: var(--font-data);
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .mc-pipe-age {
+      font-family: var(--font-data);
+      font-size: 9px;
+      color: var(--text-muted);
+    }
+    .mc-pipe-value.ok { color: var(--green); }
+    .mc-pipe-value.warn { color: var(--amber); }
+    .mc-pipe-value.bad { color: var(--red); }
+    .mc-pipe-value.dim { color: var(--text-muted); }
+
+    /* Indicators row inside market card */
+    .mc-indicators {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 4px;
+    }
+    .mc-ind {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      padding: 3px 6px;
+      background: var(--surface-1);
+      border-radius: 4px;
+    }
+    .mc-ind-key {
+      font-size: 9px;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+    .mc-ind-val {
+      font-family: var(--font-data);
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-dim);
+    }
+
+    /* Flow gauge bar */
+    .mc-flow {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .flow-label {
+      font-size: 9px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      min-width: 50px;
+    }
+    .flow-gauge {
+      flex: 1;
+      height: 6px;
+      background: var(--surface-2);
+      border-radius: 3px;
+      position: relative;
+      overflow: hidden;
+    }
+    .flow-gauge-fill {
+      position: absolute;
+      top: 0;
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.4s ease, left 0.4s ease, background 0.4s ease;
+    }
+    .flow-gauge-center {
+      position: absolute;
+      top: 0;
+      left: 50%;
+      width: 1px;
+      height: 100%;
+      background: var(--text-muted);
+      opacity: 0.3;
+    }
+    .flow-val {
+      font-family: var(--font-data);
+      font-size: 10px;
+      font-weight: 600;
+      min-width: 42px;
+      text-align: right;
+      color: var(--text-dim);
+    }
+
+    /* Decision display */
+    .mc-decision {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: var(--surface-1);
+    }
+    .mc-decision-action {
+      font-family: var(--font-data);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .mc-decision-action.BUY_UP { color: var(--green); }
+    .mc-decision-action.BUY_DOWN { color: var(--red); }
+    .mc-decision-action.HOLD { color: var(--text-muted); }
+    .mc-decision-meta {
+      font-family: var(--font-data);
+      font-size: 10px;
+      color: var(--text-muted);
+    }
+
+    /* Position rollup inside market card */
+    .mc-positions {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      border-top: 1px solid var(--border);
+      padding-top: 8px;
+      margin-top: 2px;
+    }
+    .mc-pos-row {
+      display: grid;
+      grid-template-columns: 38px 1fr 1fr 1fr 1fr;
+      gap: 4px;
+      align-items: center;
+      padding: 4px 6px;
+      background: var(--surface-1);
+      border-radius: 4px;
+      font-family: var(--font-data);
+      font-size: 10px;
+    }
+    .mc-pos-side {
+      font-weight: 700;
+      font-size: 10px;
+    }
+    .mc-pos-side.UP { color: var(--green); }
+    .mc-pos-side.DOWN { color: var(--red); }
+    .mc-pos-label {
+      color: var(--text-muted);
+      font-size: 8px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      line-height: 1;
+    }
+    .mc-pos-val {
+      font-weight: 600;
+      color: var(--text-dim);
+      line-height: 1.2;
+    }
+    .mc-pos-empty {
+      font-size: 9px;
+      color: var(--text-muted);
+      text-align: center;
+      padding: 2px 0;
+      font-style: italic;
+    }
+
+    /* ── Right Sidebar ── */
+    .sidebar {
+      grid-column: 2;
+      grid-row: 1 / -1;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      max-height: calc(100vh - 220px);
+    }
+
+    .sidebar-section {
+      border-bottom: 1px solid var(--border);
+    }
+    .sidebar-title {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-muted);
+      padding: 14px 16px;
+      margin: 0;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      user-select: none;
+      transition: color 0.15s;
+    }
+    .sidebar-title:hover { color: var(--text-dim); }
+    .sidebar-title::after {
+      content: "";
+      width: 10px;
+      height: 10px;
+      border-right: 2px solid currentColor;
+      border-bottom: 2px solid currentColor;
+      transform: rotate(45deg);
+      transition: transform 0.25s ease;
+      flex-shrink: 0;
+      margin-top: -3px;
+    }
+    .sidebar-section.collapsed .sidebar-title::after {
+      transform: rotate(-45deg);
+      margin-top: 2px;
+    }
+    .sidebar-body {
+      padding: 0 16px 14px;
+      overflow: hidden;
+      max-height: 800px;
+      transition: max-height 0.3s ease, padding 0.3s ease, opacity 0.25s ease;
+      opacity: 1;
+    }
+    .sidebar-section.collapsed .sidebar-body {
+      max-height: 0;
+      padding-top: 0;
+      padding-bottom: 0;
+      opacity: 0;
+    }
+
+    /* Event list */
+    .event-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .event-row {
+      display: grid;
+      grid-template-columns: 70px 1fr 56px;
+      gap: 6px;
+      align-items: center;
+      padding: 6px 8px;
+      background: var(--surface-1);
+      border-radius: 6px;
+      font-family: var(--font-data);
+      font-size: 11px;
+    }
+    .event-market {
+      font-weight: 600;
+      color: var(--text);
+    }
+    .event-detail {
+      font-size: 10px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .event-pnl {
+      text-align: right;
+      font-weight: 700;
+    }
+
+    /* Order feed */
+    .order-feed {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .order-row {
+      display: grid;
+      grid-template-columns: 52px 60px 1fr 60px;
+      gap: 6px;
+      align-items: center;
+      padding: 5px 8px;
+      background: var(--surface-1);
+      border-radius: 6px;
+      font-family: var(--font-data);
+      font-size: 10px;
+    }
+    .order-time { color: var(--text-muted); }
+    .order-action { font-weight: 700; }
+    .order-action.buy { color: var(--green); }
+    .order-action.sell { color: var(--amber); }
+    .order-detail { color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .order-wager { text-align: right; color: var(--text-dim); }
+
+    /* Reason breakdown */
+    .reason-list {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .reason-row {
+      display: grid;
+      grid-template-columns: 1fr 36px 56px;
+      gap: 6px;
+      align-items: center;
+      padding: 4px 8px;
+      background: var(--surface-1);
+      border-radius: 6px;
+      font-family: var(--font-data);
+      font-size: 10px;
+    }
+    .reason-code { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .reason-count { color: var(--text-muted); text-align: center; }
+    .reason-pnl { text-align: right; font-weight: 600; }
+
+    /* Empty state */
+    .empty {
+      font-family: var(--font-data);
+      font-size: 11px;
+      color: var(--text-muted);
+      text-align: center;
+      padding: 16px 0;
+    }
+
+    /* Scrollbar styling */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    /* Responsive */
+    @media (max-width: 1200px) {
+      .market-grid { grid-template-columns: repeat(2, 1fr); grid-template-rows: repeat(3, 1fr); }
+      .main { grid-template-columns: 1fr; }
+      .sidebar { grid-column: 1; max-height: none; }
+      .kpi-strip { grid-template-columns: repeat(4, 1fr); }
+    }
+
+    /* Flash animation for value updates */
+    @keyframes value-flash {
+      0% { background: rgba(234,179,8,0.15); }
+      100% { background: transparent; }
+    }
+    .flash { animation: value-flash 0.6s ease-out; }
+  </style>
+</head>
+<body>
+
+<!-- ── Top Bar ── -->
+<div class="topbar">
+  <div class="topbar-left">
+<div class="session-badge live" id="sessionBadge">
+      <div class="pulse" id="heartbeat"></div>
+      <span id="sessionStatus">RUNNING</span>
+    </div>
+    <span style="font-family:var(--font-data);font-size:11px;color:var(--text-muted)" id="sessionMeta">dry_run · 60m · 6 markets</span>
+  </div>
+  <div class="topbar-center" id="countdownWrap">
+    <span class="countdown-value" id="countdown">60:00</span>
+    <span class="countdown-label">remaining</span>
+  </div>
+  <div class="topbar-right">
+    <span style="font-family:var(--font-data);font-size:10px;color:var(--text-muted)" id="streamAge">SSE 0.2s ago</span>
+    <div class="topbar-clock" id="clock">--:--:--</div>
+  </div>
+</div>
+
+<!-- ── Controls Strip ── -->
+<div class="controls">
+  <div class="market-toggles" id="marketToggles"></div>
+  <div class="spacer"></div>
+  <div class="control-group">
+    <label>Duration</label>
+    <input type="number" id="duration" value="60" min="1" step="1" />
+  </div>
+  <div class="control-group">
+    <label>Mode</label>
+    <select id="mode">
+      <option value="dry_run" selected>dry_run</option>
+      <option value="live">live</option>
+    </select>
+  </div>
+  <div class="sep"></div>
+  <button class="btn btn-start btn-toggle" id="toggleBtn">Start</button>
+</div>
+
+<!-- ── KPI Strip ── -->
+<div class="kpi-strip" id="kpiStrip">
+  <div class="kpi"><span class="kpi-label">Total Wagered</span><span class="kpi-value neutral" id="kpiWagered">$8.420</span><span class="kpi-sub" id="kpiWageredSub">returned $9.704</span></div>
+  <div class="kpi"><span class="kpi-label">Realized PnL</span><span class="kpi-value positive" id="kpiPnl">+$1.284</span><span class="kpi-sub" id="kpiPnlSub">4W 2L · PF 1.82</span></div>
+  <div class="kpi"><span class="kpi-label">Win Rate</span><span class="kpi-value" id="kpiWinRate">66.7%</span><span class="kpi-sub" id="kpiWinRateSub">4 of 6 resolved</span></div>
+  <div class="kpi"><span class="kpi-label">Open Positions</span><span class="kpi-value" id="kpiOpen">3</span><span class="kpi-sub" id="kpiOpenSub">UP $4.20 · DN $1.80</span></div>
+  <div class="kpi"><span class="kpi-label">Flow Blocks</span><span class="kpi-value neutral" id="kpiFlowBlocks">12</span><span class="kpi-sub">entries gated</span></div>
+  <div class="kpi"><span class="kpi-label">Events</span><span class="kpi-value" id="kpiEvents">8</span><span class="kpi-sub" id="kpiEventsSub">6 resolved · 2 running</span></div>
+  <div class="kpi"><span class="kpi-label">Orders</span><span class="kpi-value" id="kpiOrders">14</span><span class="kpi-sub" id="kpiOrdersSub">12 fills · 2 open</span></div>
+</div>
+
+<!-- ── Main Layout ── -->
+<div class="main">
+  <!-- Market Cards -->
+  <div class="market-grid" id="marketGrid"></div>
+
+  <!-- Right Sidebar -->
+  <div class="sidebar" id="sidebar">
+    <div class="sidebar-section" id="sec-events">
+      <div class="sidebar-title" onclick="toggleSection('sec-events')">Event Outcomes</div>
+      <div class="sidebar-body"><div class="event-list" id="eventList"></div></div>
+    </div>
+    <div class="sidebar-section" id="sec-reasons">
+      <div class="sidebar-title" onclick="toggleSection('sec-reasons')">Reason Codes</div>
+      <div class="sidebar-body"><div class="reason-list" id="reasonList"></div></div>
+    </div>
+    <div class="sidebar-section" id="sec-orders">
+      <div class="sidebar-title" onclick="toggleSection('sec-orders')">Order Feed (latest 20)</div>
+      <div class="sidebar-body"><div class="order-feed" id="orderFeed"></div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const DEFAULT_MARKETS = ["btc15","eth15","sol15","btc5","eth5","sol5"];
+const MARKET_ORDER = [...DEFAULT_MARKETS];
+
+let sessionActive = false;
+let lastSSEAt = 0;
+let countdownEndMs = null;
+let countdownTimer = null;
+const previousSlugs = {};
+const startingUntil = {};
+
+const sessionBadge = document.getElementById("sessionBadge");
+const heartbeat = document.getElementById("heartbeat");
+const sessionStatus = document.getElementById("sessionStatus");
+const sessionMeta = document.getElementById("sessionMeta");
+const streamAgeEl = document.getElementById("streamAge");
+const clockEl = document.getElementById("clock");
+const countdownEl = document.getElementById("countdown");
+
+const toggleBtn = document.getElementById("toggleBtn");
+const durationInput = document.getElementById("duration");
+const modeSelect = document.getElementById("mode");
+const marketTogglesEl = document.getElementById("marketToggles");
+
+const marketGrid = document.getElementById("marketGrid");
+const eventList = document.getElementById("eventList");
+const reasonList = document.getElementById("reasonList");
+const orderFeed = document.getElementById("orderFeed");
+
+const kpiWagered = document.getElementById("kpiWagered");
+const kpiWageredSub = document.getElementById("kpiWageredSub");
+const kpiPnl = document.getElementById("kpiPnl");
+const kpiPnlSub = document.getElementById("kpiPnlSub");
+const kpiWinRate = document.getElementById("kpiWinRate");
+const kpiWinRateSub = document.getElementById("kpiWinRateSub");
+const kpiOpen = document.getElementById("kpiOpen");
+const kpiOpenSub = document.getElementById("kpiOpenSub");
+const kpiFlowBlocks = document.getElementById("kpiFlowBlocks");
+const kpiEvents = document.getElementById("kpiEvents");
+const kpiEventsSub = document.getElementById("kpiEventsSub");
+const kpiOrders = document.getElementById("kpiOrders");
+const kpiOrdersSub = document.getElementById("kpiOrdersSub");
+
+function safeNum(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function fmt(value, digits = 3) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(digits) : "-";
+}
+
+function fmtSignedUsd(value, digits = 3) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "-";
+  const prefix = n > 0 ? "+" : (n < 0 ? "-" : "");
+  return `${prefix}$${Math.abs(n).toFixed(digits)}`;
+}
+
+function fmtUsd(value, digits = 3) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "$0.000";
+  return `$${n.toFixed(digits)}`;
+}
+
+function pct(value, digits = 1) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "0.0%";
+  return `${(n * 100).toFixed(digits)}%`;
+}
+
+function ageSeconds(epochSec) {
+  const ts = Number(epochSec);
+  if (!Number.isFinite(ts) || ts <= 0) return null;
+  const age = (Date.now() / 1000) - ts;
+  return age >= 0 ? age : null;
+}
+
+function shortTimeFromIso(ts) {
+  if (!ts) return "--:--:--";
+  const dt = new Date(ts);
+  if (Number.isNaN(dt.getTime())) return "--:--:--";
+  return dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function marketLabel(key) {
+  const text = String(key || "");
+  const m = text.match(/^([a-zA-Z]+)(\d+)$/);
+  if (!m) return text || "-";
+  return `${m[1].toUpperCase()} ${m[2]}m`;
+}
+
+function renderMarketToggles(initialMarkets = DEFAULT_MARKETS) {
+  const active = new Set(initialMarkets);
+  marketTogglesEl.innerHTML = MARKET_ORDER.map((key) => {
+    const isActive = active.has(key);
+    return `<div class="market-toggle ${isActive ? "active" : ""}" data-market="${key}">${marketLabel(key)}</div>`;
+  }).join("");
+
+  marketTogglesEl.querySelectorAll(".market-toggle").forEach((btn) => {
+    btn.addEventListener("click", () => btn.classList.toggle("active"));
+  });
+}
+
+function activeMarkets() {
+  return Array.from(marketTogglesEl.querySelectorAll(".market-toggle.active")).map((el) => el.dataset.market || "").filter(Boolean);
+}
+
+function setControlsLocked(locked) {
+  durationInput.disabled = locked;
+  modeSelect.disabled = locked;
+}
+
+function setCountdownFromDuration(minutes) {
+  const mins = Math.max(1, Math.floor(safeNum(minutes, 60)));
+  countdownEndMs = Date.now() + (mins * 60 * 1000);
+  updateCountdown();
+}
+
+function stopCountdown(resetToDuration = true) {
+  countdownEndMs = null;
+  if (resetToDuration) {
+    const mins = Math.max(1, Math.floor(safeNum(durationInput.value, 60)));
+    countdownEl.textContent = `${String(mins).padStart(2, "0")}:00`;
+  } else {
+    countdownEl.textContent = "00:00";
+  }
+  countdownEl.classList.remove("urgent", "warning", "paused");
+  countdownEl.classList.add("stopped");
+}
+
+function updateCountdown() {
+  countdownEl.classList.remove("urgent", "warning", "paused", "stopped");
+  if (countdownEndMs === null) {
+    const mins = Math.max(1, Math.floor(safeNum(durationInput.value, 60)));
+    countdownEl.textContent = `${String(mins).padStart(2, "0")}:00`;
+    countdownEl.classList.add("stopped");
+    return;
+  }
+
+  const sec = Math.max(0, Math.round((countdownEndMs - Date.now()) / 1000));
+  const mm = Math.floor(sec / 60);
+  const ss = sec % 60;
+  countdownEl.textContent = `${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+  if (sec <= 30) countdownEl.classList.add("urgent");
+  else if (sec <= 120) countdownEl.classList.add("warning");
+  if (sec === 0) countdownEl.classList.add("stopped");
+}
+
+function startCountdownTicker() {
+  if (countdownTimer !== null) return;
+  countdownTimer = window.setInterval(updateCountdown, 1000);
+}
+
+function updateClock() {
+  clockEl.textContent = new Date().toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZone: "UTC",
+  });
+}
+
+function updateStreamAge() {
+  if (!lastSSEAt) {
+    streamAgeEl.textContent = "SSE waiting...";
+    return;
+  }
+  const sec = ((Date.now() - lastSSEAt) / 1000).toFixed(1);
+  streamAgeEl.textContent = `SSE ${sec}s ago`;
+}
+
+function applySessionState(state) {
+  const running = Boolean(state.running);
+  const paused = Boolean(state.paused);
+  sessionActive = running;
+
+  sessionMeta.textContent = `${state.mode || "dry_run"} · ${safeNum(state.duration_minutes, 60)}m · ${(state.markets || []).length} markets`;
+
+  if (running && !paused) {
+    sessionBadge.className = "session-badge live";
+    sessionStatus.textContent = "RUNNING";
+    heartbeat.className = "pulse";
+    toggleBtn.textContent = "Stop";
+    toggleBtn.classList.remove("btn-start");
+    toggleBtn.classList.add("btn-stop");
+    setControlsLocked(true);
+    if (countdownEndMs === null) setCountdownFromDuration(safeNum(state.duration_minutes, 60));
+  } else if (paused) {
+    sessionBadge.className = "session-badge paused";
+    sessionStatus.textContent = "PAUSED";
+    heartbeat.className = "pulse warn";
+    toggleBtn.textContent = "Stop";
+    toggleBtn.classList.remove("btn-start");
+    toggleBtn.classList.add("btn-stop");
+    setControlsLocked(true);
+    countdownEl.classList.add("paused");
+  } else {
+    sessionBadge.className = "session-badge stopped";
+    sessionStatus.textContent = "STOPPED";
+    heartbeat.className = "pulse dead";
+    toggleBtn.textContent = "Start";
+    toggleBtn.classList.remove("btn-stop");
+    toggleBtn.classList.add("btn-start");
+    setControlsLocked(false);
+    stopCountdown(true);
+  }
+
+  if (state.mode) modeSelect.value = state.mode;
+}
+
+function applyKpis(state) {
+  const totals = (state.earnings && state.earnings.totals) || {};
+  const workers = state.workers || {};
+  const fills = Object.values(workers).reduce((acc, worker) => acc + safeNum(worker?.activity?.fill_count, 0), 0);
+
+  const realizedPnl = safeNum(totals.resolved_pnl_usdc, 0);
+  kpiWagered.textContent = fmtUsd(safeNum(totals.total_wagered_usdc, 0));
+  kpiWageredSub.textContent = `returned ${fmtUsd(safeNum(totals.resolved_returned_usdc, 0))}`;
+
+  kpiPnl.textContent = fmtSignedUsd(realizedPnl);
+  kpiPnl.classList.remove("positive", "negative", "neutral");
+  if (realizedPnl > 0) kpiPnl.classList.add("positive");
+  else if (realizedPnl < 0) kpiPnl.classList.add("negative");
+  else kpiPnl.classList.add("neutral");
+
+  kpiPnlSub.textContent = `${safeNum(totals.accurate_events, 0)}W ${safeNum(totals.inaccurate_events, 0)}L · PF ${totals.profit_factor ?? "-"}`;
+  kpiWinRate.textContent = pct(safeNum(totals.win_rate, 0));
+  kpiWinRateSub.textContent = `${safeNum(totals.accurate_events, 0)} of ${safeNum(totals.resolved_events, 0)} resolved`;
+
+  kpiOpen.textContent = String(safeNum(totals.open_position_sides_count, 0));
+  kpiOpenSub.textContent = `UP ${fmtUsd(safeNum(totals.open_up_exposure_usdc, 0), 2)} · DN ${fmtUsd(safeNum(totals.open_down_exposure_usdc, 0), 2)}`;
+
+  kpiFlowBlocks.textContent = String(safeNum(totals.entry_blocked_flow_against_direction_count, 0));
+
+  const eventsTotal = safeNum(totals.resolved_events, 0) + safeNum(totals.running_events, 0) + safeNum(totals.pending_events, 0);
+  kpiEvents.textContent = String(eventsTotal);
+  kpiEventsSub.textContent = `${safeNum(totals.resolved_events, 0)} resolved · ${safeNum(totals.running_events, 0)} running`;
+
+  kpiOrders.textContent = String(safeNum(totals.order_rows, 0));
+  kpiOrdersSub.textContent = `${fills} fills · ${safeNum(totals.open_orders_count, 0)} open`;
+}
+
+function pipelineValueClass(age) {
+  if (age === null) return "dim";
+  if (age > 5) return "bad";
+  if (age > 2) return "warn";
+  return "ok";
+}
+
+function healthClass(worker, activity, key) {
+  const status = String(worker.status || "");
+  const now = Date.now();
+  if (startingUntil[key] && now < startingUntil[key]) return "starting";
+  if (!["running", "starting"].includes(status)) return "idle";
+  if (status === "error" || worker.last_error) return "error";
+
+  const wsAge = ageSeconds(activity.ws_last_ts);
+  const indAge = ageSeconds(activity.indicator_last_ts);
+  if (wsAge !== null && indAge !== null && wsAge < 2 && indAge < 2) return "healthy";
+  if ((wsAge !== null && wsAge <= 5) || (indAge !== null && indAge <= 5)) return "stale";
+  return "error";
+}
+
+function flowColor(value) {
+  if (value > 0.15) return "var(--green)";
+  if (value < -0.15) return "var(--red)";
+  return "var(--text-muted)";
+}
+
+function renderPositionRollup(activity) {
+  const rollup = activity.position_rollup || {};
+  const mid = safeNum(activity?.indicators?.mid_price, 0);
+  const rows = [];
+
+  ["UP", "DOWN"].forEach((side) => {
+    const pos = rollup[side];
+    if (!pos) return;
+    const shares = safeNum(pos.shares, 0);
+    const avgPrice = safeNum(pos.avg_price, 0);
+    const totalWager = safeNum(pos.total_wager, 0);
+    if (shares <= 0 || avgPrice <= 0 || totalWager <= 0) return;
+
+    const pnlRaw = (mid - avgPrice) * shares * (side === "UP" ? 1 : -1);
+    const pnlColor = pnlRaw >= 0 ? "var(--green)" : "var(--red)";
+    const pnlSign = pnlRaw >= 0 ? "+" : "";
+
+    rows.push(`
+      <div class="mc-pos-row">
+        <span class="mc-pos-side ${side}">${side}</span>
+        <span><span class="mc-pos-label">shares</span><br><span class="mc-pos-val">${fmt(shares, 1)}</span></span>
+        <span><span class="mc-pos-label">avg px</span><br><span class="mc-pos-val">${fmt(avgPrice, 3)}</span></span>
+        <span><span class="mc-pos-label">wager</span><br><span class="mc-pos-val">${fmtUsd(totalWager, 2)}</span></span>
+        <span><span class="mc-pos-label">p&l</span><br><span class="mc-pos-val" style="color:${pnlColor}">${pnlSign}${fmtUsd(Math.abs(pnlRaw), 2)}</span></span>
+      </div>
+    `);
+  });
+
+  if (!rows.length) {
+    return '<div class="mc-positions"><div class="mc-pos-empty">no open positions</div></div>';
+  }
+  return `<div class="mc-positions">${rows.join("")}</div>`;
+}
+
+function renderMarketCards(state) {
+  const workers = state.workers || {};
+  const keys = [...MARKET_ORDER.filter((k) => workers[k]), ...Object.keys(workers).filter((k) => !MARKET_ORDER.includes(k)).sort()];
+
+  if (!keys.length) {
+    marketGrid.innerHTML = '<div class="empty" style="grid-column:1/-1;padding:26px;">No market workers active</div>';
+    return;
+  }
+
+  marketGrid.innerHTML = keys.map((key) => {
+    const worker = workers[key] || {};
+    const activity = worker.activity || {};
+    const indicators = activity.indicators || {};
+
+    const wsAge = ageSeconds(activity.ws_last_ts);
+    const indAge = ageSeconds(activity.indicator_last_ts);
+    const decAge = ageSeconds(activity.decision_last_ts);
+
+    const hc = healthClass(worker, activity, key);
+    const status = String(worker.status || "idle");
+    const statusLabel = status === "running" ? "running" : (hc === "starting" ? "starting" : (status === "error" ? "error" : "idle"));
+
+    const ew = Math.max(-1, Math.min(1, safeNum(indicators.ew_delta_imbalance, 0)));
+    const tox = Math.max(0, Math.min(1, safeNum(indicators.flow_toxicity, 0)));
+    const ewPct = ((ew + 1) / 2) * 100;
+    const ewLeft = Math.min(ewPct, 50);
+    const ewWidth = Math.abs(ewPct - 50);
+    const ewFillStyle = ew >= 0
+      ? `left:50%;width:${ewWidth}%;background:var(--green);`
+      : `left:${ewLeft}%;width:${ewWidth}%;background:var(--red);`;
+    const toxPct = tox * 100;
+    const toxColor = tox > 0.5 ? "var(--red)" : (tox > 0.3 ? "var(--amber)" : "var(--green)");
+
+    const decisionAction = String(activity.decision_last_action || "HOLD");
+    const reason = String(activity.decision_last_reason || "-");
+
+    return `
+      <div class="market-card ${hc}">
+        <div class="mc-header">
+          <span class="mc-symbol">${marketLabel(key)}</span>
+          <span class="mc-status ${statusLabel}">${statusLabel}</span>
+        </div>
+        <div class="mc-event">${worker.event_slug || "-"} · done ${safeNum(worker.completed_events, 0)}</div>
+
+        <div class="mc-pipeline">
+          <div class="mc-pipe">
+            <span class="mc-pipe-label">Ingest</span>
+            <span class="mc-pipe-value ${pipelineValueClass(wsAge)}">${safeNum(activity.ws_ticks, 0)}</span>
+            <span class="mc-pipe-age">${wsAge === null ? "-" : `${wsAge.toFixed(1)}s ago`}</span>
+          </div>
+          <div class="mc-pipe">
+            <span class="mc-pipe-label">Indicators</span>
+            <span class="mc-pipe-value ${pipelineValueClass(indAge)}">${safeNum(activity.indicator_updates, 0)}</span>
+            <span class="mc-pipe-age">${indAge === null ? "-" : `${indAge.toFixed(1)}s ago`}</span>
+          </div>
+          <div class="mc-pipe">
+            <span class="mc-pipe-label">Decisions</span>
+            <span class="mc-pipe-value ${pipelineValueClass(decAge)}">${safeNum(activity.decision_count, 0)}</span>
+            <span class="mc-pipe-age">${decAge === null ? "-" : `${decAge.toFixed(1)}s ago`}</span>
+          </div>
+          <div class="mc-pipe">
+            <span class="mc-pipe-label">Orders</span>
+            <span class="mc-pipe-value ${safeNum(activity.open_orders, 0) > 0 ? "warn" : "ok"}">${safeNum(activity.order_count, 0)} / ${safeNum(activity.fill_count, 0)}</span>
+            <span class="mc-pipe-age">open ${safeNum(activity.open_orders, 0)}</span>
+          </div>
+        </div>
+
+        <div class="mc-indicators">
+          <div class="mc-ind"><span class="mc-ind-key">mid</span><span class="mc-ind-val">${fmt(indicators.mid_price, 3)}</span></div>
+          <div class="mc-ind"><span class="mc-ind-key">vwap</span><span class="mc-ind-val">${fmt(indicators.vwap_1m, 3)}</span></div>
+          <div class="mc-ind"><span class="mc-ind-key">imb</span><span class="mc-ind-val" style="color:${safeNum(indicators.order_imbalance, 0) >= 0 ? "var(--green)" : "var(--red)"}">${safeNum(indicators.order_imbalance, 0) >= 0 ? "+" : ""}${fmt(indicators.order_imbalance, 2)}</span></div>
+        </div>
+
+        <div class="mc-flow">
+          <span class="flow-label">EW Delta</span>
+          <div class="flow-gauge">
+            <div class="flow-gauge-center"></div>
+            <div class="flow-gauge-fill" style="${ewFillStyle}opacity:0.7"></div>
+          </div>
+          <span class="flow-val" style="color:${flowColor(ew)}">${ew >= 0 ? "+" : ""}${ew.toFixed(2)}</span>
+        </div>
+
+        <div class="mc-flow">
+          <span class="flow-label">Toxicity</span>
+          <div class="flow-gauge">
+            <div class="flow-gauge-fill" style="left:0;width:${toxPct}%;background:${toxColor};opacity:0.6"></div>
+          </div>
+          <span class="flow-val">${tox.toFixed(2)}</span>
+        </div>
+
+        <div class="mc-decision">
+          <span class="mc-decision-action ${decisionAction}">${decisionAction}</span>
+          <span class="mc-decision-meta">c=${fmt(activity.decision_last_confidence, 2)} e=${fmt(activity.decision_last_edge, 2)} · ${reason}</span>
+        </div>
+
+        ${renderPositionRollup(activity)}
+      </div>
+    `;
+  }).join("");
+}
+
+function renderEvents(state) {
+  const rows = (state.earnings && state.earnings.events) || [];
+  if (!rows.length) {
+    eventList.innerHTML = '<div class="empty">No events yet</div>';
+    return;
+  }
+
+  eventList.innerHTML = rows.map((row) => {
+    const status = String(row.status || "pending");
+    const accurate = row.was_prediction_accurate;
+    const pnl = row.pnl_usdc;
+    const dot = status === "running"
+      ? '<span style="color:var(--amber)">&#x25CF;</span>'
+      : (accurate === true
+        ? '<span style="color:var(--green)">&#x25CF;</span>'
+        : '<span style="color:var(--red)">&#x25CF;</span>');
+
+    const detail = status === "resolved"
+      ? `W:${row.winning_side || "-"} P:${row.predicted_side || "-"} · wager ${fmtUsd(safeNum(row.wagered_usdc, 0), 3)}`
+      : `running... · wager ${fmtUsd(safeNum(row.wagered_usdc, 0), 3)}`;
+
+    const pnlHtml = (pnl === null || pnl === undefined)
+      ? "..."
+      : fmtSignedUsd(safeNum(pnl, 0), 3);
+
+    const pnlClass = (pnl === null || pnl === undefined)
+      ? ""
+      : (safeNum(pnl, 0) > 0 ? "positive" : (safeNum(pnl, 0) < 0 ? "negative" : ""));
+
+    return `
+      <div class="event-row">
+        <span class="event-market">${dot} ${marketLabel(row.market_key)}</span>
+        <span class="event-detail">${detail}</span>
+        <span class="event-pnl ${pnlClass}">${pnlHtml}</span>
+      </div>
+    `;
+  }).join("");
+}
+
+function renderReasons(state) {
+  const breakdown = ((state.earnings || {}).totals || {}).reason_code_breakdown || {};
+  const rows = Object.entries(breakdown).map(([code, values]) => ({
+    code,
+    entries: safeNum(values.entries, 0),
+    pnl: safeNum(values.attributed_pnl_usdc, 0),
+  })).sort((a, b) => b.entries - a.entries);
+
+  if (!rows.length) {
+    reasonList.innerHTML = '<div class="empty">No reason codes yet</div>';
+    return;
+  }
+
+  reasonList.innerHTML = rows.map((row) => {
+    const pnlClass = row.pnl > 0 ? "positive" : (row.pnl < 0 ? "negative" : "");
+    return `
+      <div class="reason-row">
+        <span class="reason-code">${row.code}</span>
+        <span class="reason-count">${row.entries}x</span>
+        <span class="reason-pnl ${pnlClass}">${fmtSignedUsd(row.pnl, 3)}</span>
+      </div>
+    `;
+  }).join("");
+}
+
+function shortReason(reason) {
+  const text = String(reason || "-");
+  const parts = text.split("_");
+  if (parts.length <= 2) return text;
+  return `${parts[0]}_${parts[1]}`;
+}
+
+function renderOrders(state) {
+  const rows = ((state.earnings || {}).orders || []).slice(0, 20);
+  if (!rows.length) {
+    orderFeed.innerHTML = '<div class="empty">No orders yet</div>';
+    return;
+  }
+
+  orderFeed.innerHTML = rows.map((row) => {
+    const action = String(row.action || "-");
+    const isBuy = action.startsWith("BUY");
+    return `
+      <div class="order-row">
+        <span class="order-time">${shortTimeFromIso(row.ts)}</span>
+        <span class="order-action ${isBuy ? "buy" : "sell"}">${action}</span>
+        <span class="order-detail">${fmt(row.price, 3)} x ${fmt(row.shares, 1)} · ${shortReason(row.reason_code)}</span>
+        <span class="order-wager">${fmtUsd(safeNum(row.wager_usdc, 0), 3)}</span>
+      </div>
+    `;
+  }).join("");
+}
+
+function applyState(state) {
+  const workers = state.workers || {};
+  for (const key of Object.keys(workers)) {
+    const nextSlug = workers[key]?.event_slug || null;
+    const prevSlug = previousSlugs[key] || null;
+    if (prevSlug && nextSlug && prevSlug !== nextSlug) {
+      startingUntil[key] = Date.now() + 2000;
+    }
+    previousSlugs[key] = nextSlug;
+  }
+
+  applySessionState(state);
+  applyKpis(state);
+  renderMarketCards(state);
+  renderEvents(state);
+  renderReasons(state);
+  renderOrders(state);
+}
+
+async function postJson(path, body) {
+  const resp = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  const data = await resp.json();
+  if (!resp.ok) {
+    throw new Error(data.detail || `Request failed (${resp.status})`);
+  }
+  return data;
+}
+
+async function fetchInitialState() {
+  const resp = await fetch("/api/state");
+  const state = await resp.json();
+  applyState(state);
+}
+
+function connectStream() {
+  const stream = new EventSource("/api/stream");
+  stream.onmessage = (evt) => {
+    try {
+      const state = JSON.parse(evt.data);
+      lastSSEAt = Date.now();
+      updateStreamAge();
+      applyState(state);
+    } catch {
+      // ignore malformed payloads
+    }
+  };
+  stream.onerror = () => {
+    // keep browser EventSource auto-reconnect behavior
+  };
+}
+
+function toggleSection(id) {
+  document.getElementById(id).classList.toggle("collapsed");
+}
+window.toggleSection = toggleSection;
+
+toggleBtn.addEventListener("click", async () => {
+  try {
+    if (!sessionActive) {
+      const markets = activeMarkets();
+      if (!markets.length) {
+        alert("Select at least one market");
+        return;
+      }
+      const started = await postJson("/api/start", {
+        markets,
+        duration_minutes: Math.max(1, Math.floor(safeNum(durationInput.value, 60))),
+        mode: modeSelect.value,
+        status_interval_sec: 1.0,
+      });
+      setCountdownFromDuration(safeNum(started.duration_minutes, 60));
+      applyState(started);
+    } else {
+      const stopped = await postJson("/api/stop", {});
+      applyState(stopped);
+    }
+  } catch (err) {
+    alert(err?.message || "Request failed");
+  }
+});
+
+durationInput.addEventListener("input", () => {
+  if (countdownEndMs === null) {
+    updateCountdown();
+  }
+});
+
+renderMarketToggles(DEFAULT_MARKETS);
+updateClock();
+updateCountdown();
+updateStreamAge();
+startCountdownTicker();
+window.setInterval(updateClock, 1000);
+window.setInterval(updateStreamAge, 200);
+
+fetchInitialState().catch(() => {});
+connectStream();
+</script>
+
+</body>
+</html>
