@@ -17,6 +17,8 @@ class MarketState:
     trades: deque[tuple[datetime, float, float]] = field(default_factory=deque)
     spread_hist: deque[tuple[datetime, float]] = field(default_factory=deque)
     mid_hist: deque[tuple[datetime, float]] = field(default_factory=deque)
+    vwap_30s_hist: deque[tuple[datetime, float]] = field(default_factory=deque)
+    mid_momentum_30s_hist: deque[tuple[datetime, float]] = field(default_factory=deque)
 
     def add_trade(self, price: float, size: float, ts: datetime) -> None:
         self.trades.append((ts, price, size))
@@ -29,6 +31,14 @@ class MarketState:
     def record_spread(self, spread: float, ts: datetime) -> None:
         self.spread_hist.append((ts, spread))
         self._prune_metric(self.spread_hist, ts, 300)
+
+    def record_vwap_30s(self, value: float, ts: datetime) -> None:
+        self.vwap_30s_hist.append((ts, value))
+        self._prune_metric(self.vwap_30s_hist, ts, 300)
+
+    def record_mid_momentum_30s(self, value: float, ts: datetime) -> None:
+        self.mid_momentum_30s_hist.append((ts, value))
+        self._prune_metric(self.mid_momentum_30s_hist, ts, 300)
 
     def snapshot_book_metrics(self, now: datetime) -> None:
         if self.book_yes.mid:

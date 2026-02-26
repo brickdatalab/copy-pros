@@ -19,7 +19,7 @@ from trader.adapters.polymarket.trading_client import TradingClient
 from trader.adapters.polymarket.ws_client import stream_market_events
 from trader.adapters.supabase.writer import BufferedSupabaseWriter
 from trader.config import TraderConfig
-from trader.engine.indicators import IndicatorEngine
+from trader.engine.indicators import IndicatorEngine, IndicatorValue
 from trader.engine.state import MarketState
 from trader.execution.cancel_replace import should_cancel
 from trader.execution.order_router import build_entry_order
@@ -43,6 +43,10 @@ _INDICATOR_ACTIVITY_KEYS: tuple[str, ...] = (
     "vwap_1m",
     "mid_momentum_30s",
     "spread_momentum_30s",
+    "reversal_imminent",
+    "vwap_delta_15s",
+    "mid_delta_15s",
+    "momentum_delta_5s",
 )
 
 
@@ -123,7 +127,7 @@ class BotRuntime:
     market_state: MarketState = field(default_factory=lambda: MarketState(market_id="market"))
     indicator_engine: IndicatorEngine = field(default_factory=IndicatorEngine)
     decision_policy: DecisionPolicy = field(default_factory=DecisionPolicy)
-    indicators: dict[str, float | None] = field(default_factory=dict)
+    indicators: dict[str, IndicatorValue] = field(default_factory=dict)
     intents: asyncio.Queue[dict[str, Any]] = field(default_factory=asyncio.Queue)
     state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     stop_event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -143,7 +147,7 @@ class BotRuntime:
     ws_last_ts: float | None = None
     indicator_updates: int = 0
     indicator_last_ts: float | None = None
-    last_indicator_snapshot: dict[str, float | None] = field(default_factory=dict)
+    last_indicator_snapshot: dict[str, IndicatorValue] = field(default_factory=dict)
     decision_last_ts: float | None = None
     decision_last_action: str | None = None
     decision_last_confidence: float | None = None
@@ -192,6 +196,12 @@ class BotRuntime:
         self.decision_policy = DecisionPolicy(
             min_confidence=self.cfg.min_signal_confidence,
             min_edge=self.cfg.min_signal_edge,
+        )
+        self.indicator_engine = IndicatorEngine(
+            vwap_up_delta_15s=self.cfg.vwap_up_delta_15s,
+            mid_flat_delta_15s=self.cfg.mid_flat_delta_15s,
+            momentum_accel_5s=self.cfg.momentum_accel_5s,
+            enable_reversal_imminent=self.cfg.enable_reversal_imminent,
         )
         ctx = await fetch_event_market_context(self.cfg.poly_event_input)
         now_ts = int(time.time())
@@ -376,7 +386,12 @@ class BotRuntime:
             if not indicators:
                 continue
 
-            decision = self.decision_policy.decide(indicators, remaining_sec)
+            decision = self.decision_policy.decide(
+                indicators,
+                remaining_sec,
+                candidate_up_price=up_ask if up_ask > 0 else None,
+                candidate_down_price=down_ask if down_ask > 0 else None,
+            )
             streak = self._advance_signal_streak(decision.action)
             self.decisions_count += 1
             self.decision_last_ts = time.time()
@@ -401,7 +416,14 @@ class BotRuntime:
                     "action": _map_action_for_db(decision.action),
                     "confidence": decision.confidence,
                     "reason_code": decision.reason_code,
-                    "reason_details": {"policy": "default", "edge": decision.edge, "streak": streak},
+                    "reason_details": {
+                        "policy": "default",
+                        "edge": decision.edge,
+                        "streak": streak,
+                        "effective_min_confidence": decision.effective_min_confidence,
+                        "threshold_relaxed": decision.threshold_relaxed,
+                        "reversal_imminent": indicators.get("reversal_imminent") is True,
+                    },
                     "indicator_snapshot": indicators,
                     "risk_snapshot": {
                         "filled_up": self.exposure_filled_usdc["UP"],
@@ -417,6 +439,7 @@ class BotRuntime:
                 down_exposure += self.exposure_open_usdc["DOWN"]
 
             now_ms = int(time.time() * 1000)
+            reversal_imminent = indicators.get("reversal_imminent") is True
             if decision.action == DecisionAction.BUY_UP and up_ask > 0:
                 gate = evaluate_entry_policy(
                     EntryPolicyInput(
@@ -448,7 +471,19 @@ class BotRuntime:
                             "price": up_ask,
                             "confidence": decision.confidence,
                             "reason_code": decision.reason_code,
+                            "reversal_imminent": reversal_imminent,
                         }
+                    )
+                elif reversal_imminent:
+                    await self.writer.enqueue_runtime_event(
+                        run_id,
+                        "warn",
+                        "reversal_entry_blocked",
+                        {
+                            "reason_code": _map_reversal_block_reason(gate.reason_code),
+                            "source_reason": gate.reason_code,
+                            "side": "UP",
+                        },
                     )
             elif decision.action == DecisionAction.BUY_DOWN and down_ask > 0:
                 gate = evaluate_entry_policy(
@@ -481,6 +516,7 @@ class BotRuntime:
                             "price": down_ask,
                             "confidence": decision.confidence,
                             "reason_code": decision.reason_code,
+                            "reversal_imminent": reversal_imminent,
                         }
                     )
 
@@ -517,6 +553,7 @@ class BotRuntime:
                 action_type = str(intent["type"])
                 price = float(intent["price"])
                 confidence = float(intent["confidence"])
+                reversal_imminent = bool(intent.get("reversal_imminent", False))
 
                 current_exposure = self.exposure_filled_usdc[side]
                 if self.cfg.count_open_orders_in_exposure:
@@ -531,13 +568,22 @@ class BotRuntime:
                         max_single_wager_usdc=self.cfg.max_single_wager_usdc,
                         min_wager_usdc=self.cfg.min_wager_usdc,
                         min_shares_per_purchase=self.cfg.min_shares_per_purchase,
+                        reversal_imminent=reversal_imminent,
                     )
                     if not size.allowed:
+                        reason_code = _map_reversal_block_reason(size.reason_code) if reversal_imminent else size.reason_code
+                        if reversal_imminent:
+                            await self.writer.enqueue_runtime_event(
+                                run_id,
+                                "warn",
+                                "reversal_entry_blocked",
+                                {"reason_code": reason_code, "source_reason": size.reason_code, "side": side},
+                            )
                         await self.writer.enqueue_runtime_event(
                             run_id,
                             "warn",
                             "risk_reject",
-                            {"side": side, "reason": size.reason_code},
+                            {"side": side, "reason": reason_code},
                         )
                         continue
 
@@ -558,11 +604,27 @@ class BotRuntime:
                     )
                     risk_decision = validate_order(candidate, risk)
                     if not risk_decision.allowed:
+                        reason_code = (
+                            _map_reversal_block_reason(risk_decision.reason_code)
+                            if reversal_imminent
+                            else risk_decision.reason_code
+                        )
+                        if reversal_imminent:
+                            await self.writer.enqueue_runtime_event(
+                                run_id,
+                                "warn",
+                                "reversal_entry_blocked",
+                                {
+                                    "reason_code": reason_code,
+                                    "source_reason": risk_decision.reason_code,
+                                    "side": side,
+                                },
+                            )
                         await self.writer.enqueue_runtime_event(
                             run_id,
                             "warn",
                             "risk_reject",
-                            {"side": side, "reason": risk_decision.reason_code},
+                            {"side": side, "reason": reason_code},
                         )
                         continue
 
@@ -902,12 +964,29 @@ def _map_action_for_db(action: DecisionAction) -> str:
     return mapping[action]
 
 
-def _compact_indicator_snapshot(indicators: dict[str, float | None]) -> dict[str, float | None]:
-    compact: dict[str, float | None] = {}
+def _compact_indicator_snapshot(indicators: dict[str, IndicatorValue]) -> dict[str, IndicatorValue]:
+    compact: dict[str, IndicatorValue] = {}
     for key in _INDICATOR_ACTIVITY_KEYS:
-        value = _to_float(indicators.get(key))
+        raw = indicators.get(key)
+        if isinstance(raw, bool):
+            compact[key] = raw
+            continue
+        value = _to_float(raw)
         compact[key] = None if value is None else round(value, 6)
     return compact
+
+
+def _map_reversal_block_reason(reason: str) -> str:
+    mapping = {
+        "signal_not_persistent": "reversal_detected_but_streak_not_satisfied",
+        "entry_cooldown": "reversal_detected_but_cooldown_active",
+        "side_budget_exhausted": "reversal_detected_but_budget_exhausted",
+        "below_min_wager": "reversal_detected_but_budget_exhausted",
+        "side_budget": "reversal_detected_but_exposure_limit",
+        "cannot_satisfy_min_shares": "reversal_detected_but_budget_exhausted",
+        "price_cap": "reversal_detected_but_price_cap_exceeded",
+    }
+    return mapping.get(reason, f"reversal_detected_but_{reason}")
 
 
 def _to_float(value: Any) -> float | None:

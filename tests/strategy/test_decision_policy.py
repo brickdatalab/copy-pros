@@ -52,3 +52,45 @@ def test_policy_holds_when_edge_too_low() -> None:
     )
     assert action.action == DecisionAction.HOLD
     assert action.reason_code == "low_edge"
+
+
+def test_reversal_setup_relaxes_confidence_for_buy_up_under_0_25() -> None:
+    policy = DecisionPolicy()
+    action = policy.decide(
+        indicators={
+            "order_imbalance": 0.22,
+            "mid_momentum_30s": 0.03,
+            "spread_momentum_30s": -0.10,
+            "mid_price": 0.20,
+            "vwap_1m": 0.194,
+            "reversal_imminent": True,
+        },
+        remaining_sec=240,
+        candidate_up_price=0.24,
+        candidate_down_price=0.76,
+    )
+    assert action.action == DecisionAction.BUY_UP
+    assert action.reason_code == "bullish_reversal_setup"
+    assert action.threshold_relaxed is True
+    assert action.effective_min_confidence == 0.40
+
+
+def test_reversal_setup_does_not_relax_confidence_above_0_25_entry() -> None:
+    policy = DecisionPolicy()
+    action = policy.decide(
+        indicators={
+            "order_imbalance": 0.22,
+            "mid_momentum_30s": 0.03,
+            "spread_momentum_30s": -0.10,
+            "mid_price": 0.20,
+            "vwap_1m": 0.194,
+            "reversal_imminent": True,
+        },
+        remaining_sec=240,
+        candidate_up_price=0.26,
+        candidate_down_price=0.74,
+    )
+    assert action.action == DecisionAction.HOLD
+    assert action.reason_code == "weak_signal"
+    assert action.threshold_relaxed is False
+    assert action.effective_min_confidence == 0.52

@@ -13,6 +13,10 @@ class TraderConfig:
     max_entry_price: float = 0.80
     min_signal_confidence: float = 0.52
     min_signal_edge: float = 0.10
+    enable_reversal_imminent: bool = True
+    vwap_up_delta_15s: float = 0.003
+    mid_flat_delta_15s: float = 0.001
+    momentum_accel_5s: float = 0.002
     signal_persist_ticks: int = 4
     entry_cooldown_ms: int = 750
     hedge_max_exposure_ratio: float = 0.25
@@ -71,6 +75,10 @@ def load_config() -> TraderConfig:
         max_entry_price=_env_float("MAX_ENTRY_PRICE", 0.80),
         min_signal_confidence=_env_float("MIN_SIGNAL_CONFIDENCE", 0.52),
         min_signal_edge=_env_float("MIN_SIGNAL_EDGE", 0.10),
+        enable_reversal_imminent=_env_bool("ENABLE_REVERSAL_IMMINENT", True),
+        vwap_up_delta_15s=_env_float("VWAP_UP_DELTA_15S", 0.003),
+        mid_flat_delta_15s=_env_float("MID_FLAT_DELTA_15S", 0.001),
+        momentum_accel_5s=_env_float("MOMENTUM_ACCEL_5S", 0.002),
         signal_persist_ticks=_env_int("SIGNAL_PERSIST_TICKS", 4),
         entry_cooldown_ms=_env_int("ENTRY_COOLDOWN_MS", 750),
         hedge_max_exposure_ratio=_env_float("HEDGE_MAX_EXPOSURE_RATIO", 0.25),

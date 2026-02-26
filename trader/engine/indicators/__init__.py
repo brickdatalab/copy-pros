@@ -8,10 +8,17 @@ from datetime import datetime, timedelta
 
 from trader.engine.state import MarketState
 
+IndicatorValue = float | bool | None
+
 
 @dataclass
 class IndicatorEngine:
-    def compute(self, state: MarketState, now: datetime) -> dict[str, float | None]:
+    vwap_up_delta_15s: float = 0.003
+    mid_flat_delta_15s: float = 0.001
+    momentum_accel_5s: float = 0.002
+    enable_reversal_imminent: bool = True
+
+    def compute(self, state: MarketState, now: datetime) -> dict[str, IndicatorValue]:
         state.snapshot_book_metrics(now)
 
         vwap_30s = _vwap(state, now, 30)
@@ -23,6 +30,54 @@ class IndicatorEngine:
         mid_momentum_15s = _mid_momentum(state, now, 15)
         mid_momentum_30s = _mid_momentum(state, now, 30)
         mid_momentum_1m = _mid_momentum(state, now, 60)
+        mid_price = state.book_yes.mid
+
+        if vwap_30s is not None:
+            state.record_vwap_30s(vwap_30s, now)
+        if mid_momentum_30s is not None:
+            state.record_mid_momentum_30s(mid_momentum_30s, now)
+
+        vwap_30s_15s_ago = _value_at_or_before_cutoff(state.vwap_30s_hist, now - timedelta(seconds=15))
+        mid_15s_ago = _value_at_or_before_cutoff(state.mid_hist, now - timedelta(seconds=15))
+        mid_momentum_30s_5s_ago = _value_at_or_before_cutoff(
+            state.mid_momentum_30s_hist,
+            now - timedelta(seconds=5),
+        )
+
+        vwap_delta_15s = (
+            (vwap_30s - vwap_30s_15s_ago)
+            if (vwap_30s is not None and vwap_30s_15s_ago is not None)
+            else None
+        )
+        mid_delta_15s = (
+            (mid_price - mid_15s_ago)
+            if (mid_price is not None and mid_15s_ago is not None)
+            else None
+        )
+        momentum_delta_5s = (
+            (mid_momentum_30s - mid_momentum_30s_5s_ago)
+            if (mid_momentum_30s is not None and mid_momentum_30s_5s_ago is not None)
+            else None
+        )
+
+        reversal_imminent = False
+        if self.enable_reversal_imminent:
+            distressed = mid_price < 0.25
+            strong_imbalance = order_imbalance > 0.30
+            vwap_divergence = (
+                vwap_delta_15s is not None
+                and mid_delta_15s is not None
+                and vwap_delta_15s >= self.vwap_up_delta_15s
+                and mid_delta_15s <= self.mid_flat_delta_15s
+            )
+            momentum_turn = (
+                mid_momentum_30s is not None
+                and mid_momentum_30s_5s_ago is not None
+                and mid_momentum_30s > 0
+                and mid_momentum_30s_5s_ago <= 0
+            )
+            momentum_accel = momentum_delta_5s is not None and momentum_delta_5s >= self.momentum_accel_5s
+            reversal_imminent = distressed and strong_imbalance and vwap_divergence and (momentum_turn or momentum_accel)
 
         return {
             "vwap_30s": vwap_30s,
@@ -33,7 +88,11 @@ class IndicatorEngine:
             "mid_momentum_15s": mid_momentum_15s,
             "mid_momentum_30s": mid_momentum_30s,
             "mid_momentum_1m": mid_momentum_1m,
-            "mid_price": state.book_yes.mid,
+            "mid_price": mid_price,
+            "vwap_delta_15s": vwap_delta_15s,
+            "mid_delta_15s": mid_delta_15s,
+            "momentum_delta_5s": momentum_delta_5s,
+            "reversal_imminent": reversal_imminent,
         }
 
 
