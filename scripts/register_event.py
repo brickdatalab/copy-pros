@@ -103,7 +103,16 @@ async def register(slug: str) -> None:
             question   = m.get("question") or m.get("title") or cid
             is_neg     = bool(m.get("negRisk") or m.get("neg_risk"))
             is_closed  = bool(m.get("closed") or m.get("resolved"))
-            end_date   = m.get("endDate") or m.get("end_date")  # ISO-8601 string or None
+            # Parse end_date ISO string → datetime (asyncpg needs datetime, not str)
+            _end_date_raw = m.get("endDate") or m.get("end_date")
+            if isinstance(_end_date_raw, str):
+                try:
+                    from datetime import datetime, timezone
+                    end_date = datetime.fromisoformat(_end_date_raw.replace("Z", "+00:00"))
+                except Exception:
+                    end_date = None
+            else:
+                end_date = None
 
             # Try to get token IDs from the market payload first
             clob_token_ids = m.get("clobTokenIds") or m.get("clob_token_ids")
