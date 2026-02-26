@@ -38,7 +38,7 @@ def test_config_loads_default_constraints(monkeypatch: pytest.MonkeyPatch) -> No
     assert cfg.hedge_max_exposure_ratio == 0.25
     assert cfg.hedge_min_confidence == 0.85
     assert cfg.hedge_max_entry_price == 0.35
-    assert cfg.max_wager_per_side_usdc == 10.0
-    assert cfg.max_single_wager_usdc == 10.0
+    assert cfg.max_wager_per_side_usdc == 5.0
+    assert cfg.max_single_wager_usdc == 5.0
     assert cfg.min_wager_usdc == 1.0
     assert cfg.min_shares_per_purchase == 5.0

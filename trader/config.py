@@ -33,8 +33,8 @@ class TraderConfig:
     hedge_max_exposure_ratio: float = 0.25
     hedge_min_confidence: float = 0.85
     hedge_max_entry_price: float = 0.35
-    max_wager_per_side_usdc: float = 10.0
-    max_single_wager_usdc: float = 10.0
+    max_wager_per_side_usdc: float = 5.0
+    max_single_wager_usdc: float = 5.0
     min_wager_usdc: float = 1.0
     min_shares_per_purchase: float = 5.0
     enable_convexity_budget_reservation: bool = False
@@ -107,8 +107,8 @@ def load_config() -> TraderConfig:
         hedge_max_exposure_ratio=_env_float("HEDGE_MAX_EXPOSURE_RATIO", 0.25),
         hedge_min_confidence=_env_float("HEDGE_MIN_CONFIDENCE", 0.85),
         hedge_max_entry_price=_env_float("HEDGE_MAX_ENTRY_PRICE", 0.35),
-        max_wager_per_side_usdc=_env_float("MAX_WAGER_PER_SIDE_USDC", 10.0),
-        max_single_wager_usdc=_env_float("MAX_SINGLE_WAGER_USDC", 10.0),
+        max_wager_per_side_usdc=_env_float("MAX_WAGER_PER_SIDE_USDC", 5.0),
+        max_single_wager_usdc=_env_float("MAX_SINGLE_WAGER_USDC", 5.0),
         min_wager_usdc=_env_float("MIN_WAGER_USDC", 1.0),
         min_shares_per_purchase=_env_float("MIN_SHARES_PER_PURCHASE", 5.0),
         enable_convexity_budget_reservation=_env_bool("ENABLE_CONVEXITY_BUDGET_RESERVATION", False),
