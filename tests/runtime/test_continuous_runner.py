@@ -197,6 +197,11 @@ def test_runner_snapshot_includes_earnings_totals_and_order_rows() -> None:
                     entry_large_trade_ratio=0.1,
                     entry_unknown_trade_ratio=0.2,
                     entry_flow_weight_preset="flow_v1",
+                    entry_signal_snapshot={
+                        "confidence": 0.74,
+                        "edge": 0.21,
+                        "order_imbalance": 0.33,
+                    },
                     status="filled",
                     ts="2026-02-26T15:55:01+00:00",
                 ),
@@ -238,6 +243,7 @@ def test_runner_snapshot_includes_earnings_totals_and_order_rows() -> None:
     assert earnings["orders"][0]["action"] == "SELL_UP"
     assert earnings["orders"][0]["reason_code"] == "take_profit_95c_discipline"
     assert earnings["orders"][1]["entry_flow_weight_preset"] == "flow_v1"
+    assert earnings["orders"][1]["entry_signal_snapshot"]["confidence"] == 0.74
 
 
 def test_runner_snapshot_includes_flow_entry_profile_and_flow_block_count() -> None:

@@ -57,6 +57,7 @@ class EventOrder:
     entry_large_trade_ratio: float | None = None
     entry_unknown_trade_ratio: float | None = None
     entry_flow_weight_preset: str | None = None
+    entry_signal_snapshot: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -847,6 +848,7 @@ def _build_event_and_orders(
             "entry_large_trade_ratio": order.entry_large_trade_ratio,
             "entry_unknown_trade_ratio": order.entry_unknown_trade_ratio,
             "entry_flow_weight_preset": order.entry_flow_weight_preset,
+            "entry_signal_snapshot": order.entry_signal_snapshot,
         }
         for order in run.orders
     ]
@@ -914,6 +916,7 @@ def _runtime_orders(runtime: BotRuntime) -> list[EventOrder]:
                 entry_large_trade_ratio=_safe_optional_float(getattr(record, "entry_large_trade_ratio", None)),
                 entry_unknown_trade_ratio=_safe_optional_float(getattr(record, "entry_unknown_trade_ratio", None)),
                 entry_flow_weight_preset=str(getattr(record, "entry_flow_weight_preset", "")) or None,
+                entry_signal_snapshot=_safe_optional_dict(getattr(record, "entry_signal_snapshot", None)),
             )
         )
     return rows
@@ -968,6 +971,12 @@ def _safe_optional_float(value: Any) -> float | None:
         return None
 
 
+def _safe_optional_dict(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return dict(value)
+    return None
+
+
 def _number_or_zero(value: float | int | None) -> float:
     if value is None:
         return 0.0
@@ -997,6 +1006,7 @@ def _to_event_run_summary(market_key: str, result: EventRunResult) -> EventRunSu
                 entry_large_trade_ratio=order.entry_large_trade_ratio,
                 entry_unknown_trade_ratio=order.entry_unknown_trade_ratio,
                 entry_flow_weight_preset=order.entry_flow_weight_preset,
+                entry_signal_snapshot=order.entry_signal_snapshot,
             )
             for order in result.orders
             if order.status in {"filled", "submitted"}

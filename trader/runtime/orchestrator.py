@@ -98,6 +98,7 @@ class OpenOrder:
     shares: float
     wager_usdc: float
     reason_code: str | None
+    entry_signal_snapshot: dict[str, IndicatorValue] | None
     created_at: float
 
 
@@ -116,6 +117,7 @@ class EventOrderRecord:
     entry_large_trade_ratio: float | None = None
     entry_unknown_trade_ratio: float | None = None
     entry_flow_weight_preset: str | None = None
+    entry_signal_snapshot: dict[str, IndicatorValue] | None = None
 
 
 @dataclass(frozen=True)
@@ -501,6 +503,17 @@ class BotRuntime:
             now_ms = int(time.time() * 1000)
             reversal_imminent = indicators.get("reversal_imminent") is True
             ew_delta_imbalance = float(indicators.get("ew_delta_imbalance") or 0.0)
+            common_entry_signal_snapshot = _build_entry_signal_snapshot(
+                indicators=indicators,
+                confidence=decision.confidence,
+                edge=decision.edge,
+                reason_code=decision.reason_code,
+                effective_min_confidence=decision.effective_min_confidence,
+                threshold_relaxed=decision.threshold_relaxed,
+                flow_boost=decision.flow_boost,
+                streak=streak,
+                remaining_sec=remaining_sec,
+            )
             if decision.action == DecisionAction.BUY_UP and up_ask > 0:
                 if _flow_blocks_entry(
                     action=decision.action,
@@ -557,6 +570,12 @@ class BotRuntime:
                             "entry_flow_weight_preset": str(
                                 indicators.get("flow_weight_preset") or self.flow_weight_preset_used
                             ),
+                            "entry_signal_snapshot": {
+                                **common_entry_signal_snapshot,
+                                "action": "BUY_UP",
+                                "entry_side": "UP",
+                                "entry_price": round(up_ask, 6),
+                            },
                         }
                     )
                     if decision.flow_boost > 0:
@@ -639,6 +658,12 @@ class BotRuntime:
                             "entry_flow_weight_preset": str(
                                 indicators.get("flow_weight_preset") or self.flow_weight_preset_used
                             ),
+                            "entry_signal_snapshot": {
+                                **common_entry_signal_snapshot,
+                                "action": "BUY_DOWN",
+                                "entry_side": "DOWN",
+                                "entry_price": round(down_ask, 6),
+                            },
                         }
                     )
                     if decision.flow_boost > 0:
@@ -693,6 +718,12 @@ class BotRuntime:
                 entry_large_trade_ratio = _to_float(intent.get("entry_large_trade_ratio"))
                 entry_unknown_trade_ratio = _to_float(intent.get("entry_unknown_trade_ratio"))
                 entry_flow_weight_preset = str(intent.get("entry_flow_weight_preset", "")).strip() or None
+                raw_entry_signal_snapshot = intent.get("entry_signal_snapshot")
+                entry_signal_snapshot = (
+                    dict(raw_entry_signal_snapshot)
+                    if isinstance(raw_entry_signal_snapshot, dict)
+                    else None
+                )
 
                 current_exposure = self.exposure_filled_usdc[side]
                 if self.cfg.count_open_orders_in_exposure:
@@ -814,6 +845,7 @@ class BotRuntime:
                         entry_large_trade_ratio=entry_large_trade_ratio,
                         entry_unknown_trade_ratio=entry_unknown_trade_ratio,
                         entry_flow_weight_preset=entry_flow_weight_preset,
+                        entry_signal_snapshot=entry_signal_snapshot,
                     )
                 else:
                     if self.exposure_filled_usdc[side] <= 0:
@@ -839,6 +871,7 @@ class BotRuntime:
                         entry_large_trade_ratio=entry_large_trade_ratio,
                         entry_unknown_trade_ratio=entry_unknown_trade_ratio,
                         entry_flow_weight_preset=entry_flow_weight_preset,
+                        entry_signal_snapshot=entry_signal_snapshot,
                     )
 
             # Cancel stale open orders when reversal is strong.
@@ -908,6 +941,7 @@ class BotRuntime:
         entry_large_trade_ratio: float | None = None,
         entry_unknown_trade_ratio: float | None = None,
         entry_flow_weight_preset: str | None = None,
+        entry_signal_snapshot: dict[str, IndicatorValue] | None = None,
     ) -> None:
         self.orders_count += 1
         action_label = "SELL_UP" if (is_sell and side == "UP") else (
@@ -948,6 +982,7 @@ class BotRuntime:
                         "entry_large_trade_ratio": entry_large_trade_ratio,
                         "entry_unknown_trade_ratio": entry_unknown_trade_ratio,
                         "entry_flow_weight_preset": entry_flow_weight_preset,
+                        "entry_signal_snapshot": entry_signal_snapshot,
                     },
                 },
             )
@@ -966,6 +1001,7 @@ class BotRuntime:
                     entry_large_trade_ratio=entry_large_trade_ratio,
                     entry_unknown_trade_ratio=entry_unknown_trade_ratio,
                     entry_flow_weight_preset=entry_flow_weight_preset,
+                    entry_signal_snapshot=entry_signal_snapshot,
                 )
             )
             self._record_order_activity(
@@ -1011,6 +1047,7 @@ class BotRuntime:
                 shares=float(payload["shares"]),
                 wager_usdc=wager_usdc,
                 reason_code=reason_code,
+                entry_signal_snapshot=entry_signal_snapshot,
                 created_at=time.time(),
             )
 
@@ -1035,6 +1072,7 @@ class BotRuntime:
                     "entry_large_trade_ratio": entry_large_trade_ratio,
                     "entry_unknown_trade_ratio": entry_unknown_trade_ratio,
                     "entry_flow_weight_preset": entry_flow_weight_preset,
+                    "entry_signal_snapshot": entry_signal_snapshot,
                 },
             },
         )
@@ -1053,6 +1091,7 @@ class BotRuntime:
                 entry_large_trade_ratio=entry_large_trade_ratio,
                 entry_unknown_trade_ratio=entry_unknown_trade_ratio,
                 entry_flow_weight_preset=entry_flow_weight_preset,
+                entry_signal_snapshot=entry_signal_snapshot,
             )
         )
         self._record_order_activity(
@@ -1100,6 +1139,7 @@ class BotRuntime:
                         "source_status": status,
                         "phase": "reconcile",
                         "reason_code": open_order.reason_code,
+                        "entry_signal_snapshot": open_order.entry_signal_snapshot,
                     },
                 },
             )
@@ -1113,6 +1153,7 @@ class BotRuntime:
                     status="filled",
                     ts=datetime.now(tz=timezone.utc).isoformat(),
                     reason_code=open_order.reason_code,
+                    entry_signal_snapshot=open_order.entry_signal_snapshot,
                 )
             )
             self._record_order_activity(
@@ -1198,6 +1239,50 @@ def _compact_indicator_snapshot(indicators: dict[str, IndicatorValue]) -> dict[s
         value = _to_float(raw)
         compact[key] = None if value is None else round(value, 6)
     return compact
+
+
+def _build_entry_signal_snapshot(
+    *,
+    indicators: dict[str, IndicatorValue],
+    confidence: float,
+    edge: float,
+    reason_code: str,
+    effective_min_confidence: float,
+    threshold_relaxed: bool,
+    flow_boost: float,
+    streak: int,
+    remaining_sec: int,
+) -> dict[str, IndicatorValue]:
+    mid_price = _to_float(indicators.get("mid_price"))
+    vwap_1m = _to_float(indicators.get("vwap_1m"))
+    price_vs_vwap: float | None = None
+    if mid_price is not None and vwap_1m is not None and vwap_1m > 0:
+        price_vs_vwap = (mid_price - vwap_1m) / vwap_1m
+
+    return {
+        "confidence": round(confidence, 6),
+        "edge": round(edge, 6),
+        "reason_code": reason_code,
+        "effective_min_confidence": round(effective_min_confidence, 6),
+        "threshold_relaxed": threshold_relaxed,
+        "flow_boost": round(flow_boost, 6),
+        "remaining_sec": float(remaining_sec),
+        "signal_streak": float(streak),
+        "mid_momentum_30s": _to_float(indicators.get("mid_momentum_30s")),
+        "price_vs_vwap": price_vs_vwap,
+        "order_imbalance": _to_float(indicators.get("order_imbalance")),
+        "spread_momentum_30s": _to_float(indicators.get("spread_momentum_30s")),
+        "ew_delta_imbalance": _to_float(indicators.get("ew_delta_imbalance")),
+        "flow_toxicity": _to_float(indicators.get("flow_toxicity")),
+        "large_trade_ratio": _to_float(indicators.get("large_trade_ratio")),
+        "unknown_trade_ratio": _to_float(indicators.get("unknown_trade_ratio")),
+        "reversal_imminent": indicators.get("reversal_imminent") is True,
+        "flow_weight_preset": (
+            str(indicators["flow_weight_preset"])
+            if isinstance(indicators.get("flow_weight_preset"), str)
+            else None
+        ),
+    }
 
 
 def _flow_blocks_entry(action: DecisionAction, ew_delta_imbalance: float, threshold: float) -> bool:
