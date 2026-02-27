@@ -1,6 +1,7 @@
 import asyncio
 import time
 from rich.console import Console
+import types
 
 from trader.adapters.supabase.writer import BufferedSupabaseWriter
 from trader.config import TraderConfig
@@ -344,6 +345,86 @@ async def test_indicator_loop_skips_timeout_ticks_when_event_driven_enabled() ->
 
     assert calls == 1
     assert runtime.indicator_updates == 0
+
+
+async def test_ws_ingest_loop_survives_bad_payload_and_continues(monkeypatch) -> None:
+    runtime = BotRuntime(
+        cfg=TraderConfig(
+            poly_event_input="btc-updown-5m-0",
+            bot_mode="dry_run",
+        ),
+        console=BotConsole(console=Console(stderr=True, quiet=True)),
+        writer=BufferedSupabaseWriter(enabled=False),
+    )
+
+    async def fake_stream_market_events(_asset_ids: list[str]):
+        # Malformed price in first payload should not kill ingest loop.
+        yield {
+            "asset_id": "up-token",
+            "event_type": "price_change",
+            "changes": [{"side": "BUY", "price": "NaN_BAD", "size": "5"}],
+        }
+        # Valid payload afterwards proves loop continues.
+        yield {
+            "asset_id": "up-token",
+            "event_type": "book",
+            "bids": [{"price": "0.49", "size": "20"}],
+            "asks": [{"price": "0.51", "size": "18"}],
+        }
+        runtime.stop_event.set()
+
+    monkeypatch.setattr("trader.runtime.orchestrator.stream_market_events", fake_stream_market_events)
+
+    ctx = types.SimpleNamespace(token_up="up-token", token_down="down-token")
+
+    await runtime._ws_ingest_loop(ctx, "run-1")  # type: ignore[arg-type]
+
+    # We should have processed at least the valid book event after the malformed frame.
+    assert runtime.ws_ticks >= 2
+    assert runtime.market_state.book_yes.best_bid == 0.49
+    assert runtime.ws_last_event_type == "book"
+
+
+async def test_ws_ingest_loop_recovers_after_unexpected_stream_error(monkeypatch) -> None:
+    runtime = BotRuntime(
+        cfg=TraderConfig(
+            poly_event_input="btc-updown-5m-0",
+            bot_mode="dry_run",
+        ),
+        console=BotConsole(console=Console(stderr=True, quiet=True)),
+        writer=BufferedSupabaseWriter(enabled=False),
+    )
+
+    calls = 0
+
+    async def fake_stream_market_events(_asset_ids: list[str]):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            yield {
+                "asset_id": "up-token",
+                "event_type": "book",
+                "bids": [{"price": "0.49", "size": "20"}],
+                "asks": [{"price": "0.51", "size": "18"}],
+            }
+            raise RuntimeError("synthetic ws failure")
+        yield {
+            "asset_id": "up-token",
+            "event_type": "book",
+            "bids": [{"price": "0.50", "size": "21"}],
+            "asks": [{"price": "0.52", "size": "19"}],
+        }
+        runtime.stop_event.set()
+
+    monkeypatch.setattr("trader.runtime.orchestrator.stream_market_events", fake_stream_market_events)
+
+    ctx = types.SimpleNamespace(token_up="up-token", token_down="down-token")
+
+    await runtime._ws_ingest_loop(ctx, "run-1")  # type: ignore[arg-type]
+
+    assert calls >= 2
+    assert runtime.ws_ticks >= 2
+    assert runtime.market_state.book_yes.best_bid == 0.50
 
 
 async def test_trigger_chain_ws_wakes_indicator_event() -> None:

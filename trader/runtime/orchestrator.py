@@ -390,59 +390,86 @@ class BotRuntime:
                 )
 
     async def _ws_ingest_loop(self, ctx: EventMarketContext, run_id: str) -> None:
-        async for msg in stream_market_events([ctx.token_up, ctx.token_down]):
-            if self.stop_event.is_set():
-                return
+        while not self.stop_event.is_set():
+            try:
+                async for msg in stream_market_events([ctx.token_up, ctx.token_down]):
+                    if self.stop_event.is_set():
+                        return
 
-            asset_id = str(msg.get("asset_id", ""))
-            event_type = str(msg.get("event_type", ""))
-            if not asset_id or not event_type:
-                continue
+                    asset_id = str(msg.get("asset_id", ""))
+                    event_type = str(msg.get("event_type", ""))
+                    if not asset_id or not event_type:
+                        continue
 
-            async with self.state_lock:
-                book = self.market_state.book_yes if asset_id == ctx.token_up else self.market_state.book_no
+                    self.ws_ticks += _ingest_units_for_event(event_type, msg)
+                    self.ws_last_event_type = event_type
+                    self.ws_last_ts = time.time()
+                    self._ws_data_event.set()
 
-                if event_type == "book":
-                    bids = msg.get("bids", [])
-                    asks = msg.get("asks", [])
-                    if isinstance(bids, list) and isinstance(asks, list):
-                        book.apply_snapshot(bids=bids, asks=asks)
-                elif event_type == "price_change":
-                    changes = msg.get("changes", [])
-                    if isinstance(changes, list):
-                        book.apply_change(changes=changes)
-                elif event_type == "last_trade_price":
-                    if asset_id == ctx.token_up:
-                        price = _to_float(msg.get("price"))
-                        size = _to_float(msg.get("size"))
-                        if price is not None and size is not None and price > 0 and size > 0:
-                            bid = self.market_state.book_yes.best_bid
-                            ask = self.market_state.book_yes.best_ask
-                            side = classify_trade_side(
-                                price=price,
-                                best_bid=bid if bid > 0 else None,
-                                best_ask=ask if ask > 0 else None,
-                                tolerance=self.cfg.trade_side_tolerance,
-                            )
-                            self.market_state.add_trade(
-                                price=price,
-                                size=size,
-                                side=side,
-                                ts=datetime.now(tz=timezone.utc),
-                            )
+                    try:
+                        async with self.state_lock:
+                            book = self.market_state.book_yes if asset_id == ctx.token_up else self.market_state.book_no
 
-            self.ws_ticks += _ingest_units_for_event(event_type, msg)
-            self.ws_last_event_type = event_type
-            self.ws_last_ts = time.time()
-            self._ws_data_event.set()
+                            if event_type == "book":
+                                bids = msg.get("bids", [])
+                                asks = msg.get("asks", [])
+                                if isinstance(bids, list) and isinstance(asks, list):
+                                    book.apply_snapshot(bids=bids, asks=asks)
+                            elif event_type == "price_change":
+                                changes = msg.get("changes", [])
+                                if isinstance(changes, list):
+                                    book.apply_change(changes=changes)
+                            elif event_type == "last_trade_price":
+                                if asset_id == ctx.token_up:
+                                    price = _to_float(msg.get("price"))
+                                    size = _to_float(msg.get("size"))
+                                    if price is not None and size is not None and price > 0 and size > 0:
+                                        bid = self.market_state.book_yes.best_bid
+                                        ask = self.market_state.book_yes.best_ask
+                                        side = classify_trade_side(
+                                            price=price,
+                                            best_bid=bid if bid > 0 else None,
+                                            best_ask=ask if ask > 0 else None,
+                                            tolerance=self.cfg.trade_side_tolerance,
+                                        )
+                                        self.market_state.add_trade(
+                                            price=price,
+                                            size=size,
+                                            side=side,
+                                            ts=datetime.now(tz=timezone.utc),
+                                        )
+                    except Exception as err:
+                        # Keep stream alive on malformed payloads; dropping one frame is
+                        # safer than killing the market ingest task.
+                        await self.writer.enqueue_runtime_event(
+                            run_id,
+                            "warn",
+                            "ws_message_process_error",
+                            {
+                                "asset_id": asset_id,
+                                "event_type": event_type,
+                                "error": str(err)[:200],
+                            },
+                        )
+                        continue
 
-            if self.cfg.ws_tick_log_sample_every > 0 and (self.ws_ticks % self.cfg.ws_tick_log_sample_every) == 0:
+                    if self.cfg.ws_tick_log_sample_every > 0 and (self.ws_ticks % self.cfg.ws_tick_log_sample_every) == 0:
+                        await self.writer.enqueue_runtime_event(
+                            run_id,
+                            "info",
+                            "ws_tick",
+                            {"event_type": event_type, "asset_id": asset_id},
+                        )
+            except Exception as err:
+                if self.stop_event.is_set():
+                    return
                 await self.writer.enqueue_runtime_event(
                     run_id,
-                    "info",
-                    "ws_tick",
-                    {"event_type": event_type, "asset_id": asset_id},
+                    "warn",
+                    "ws_stream_recovered",
+                    {"error": str(err)[:200]},
                 )
+                await asyncio.sleep(0.25)
 
     async def _indicator_loop(self) -> None:
         while not self.stop_event.is_set():
