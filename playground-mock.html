@@ -966,11 +966,21 @@ function updateStreamAge() {
 function applySessionState(state) {
   const running = Boolean(state.running);
   const paused = Boolean(state.paused);
-  sessionActive = running;
+  const stopping = Boolean(state.stop_requested) && running;
+  sessionActive = running && !stopping;
 
   sessionMeta.textContent = `${state.mode || "dry_run"} · ${safeNum(state.duration_minutes, 60)}m · ${(state.markets || []).length} markets`;
 
-  if (running && !paused) {
+  if (stopping) {
+    sessionBadge.className = "session-badge paused";
+    sessionStatus.textContent = "STOPPING";
+    heartbeat.className = "pulse warn";
+    toggleBtn.textContent = "Start";
+    toggleBtn.classList.remove("btn-stop");
+    toggleBtn.classList.add("btn-start");
+    setControlsLocked(false);
+    stopCountdown(false);
+  } else if (running && !paused) {
     sessionBadge.className = "session-badge live";
     sessionStatus.textContent = "RUNNING";
     heartbeat.className = "pulse";
@@ -1036,8 +1046,8 @@ function applyKpis(state) {
 
 function pipelineValueClass(age) {
   if (age === null) return "dim";
-  if (age > 5) return "bad";
-  if (age > 2) return "warn";
+  if (age > 10) return "bad";
+  if (age > 4) return "warn";
   return "ok";
 }
 
@@ -1050,8 +1060,8 @@ function healthClass(worker, activity, key) {
 
   const wsAge = ageSeconds(activity.ws_last_ts);
   const indAge = ageSeconds(activity.indicator_last_ts);
-  if (wsAge !== null && indAge !== null && wsAge < 2 && indAge < 2) return "healthy";
-  if ((wsAge !== null && wsAge <= 5) || (indAge !== null && indAge <= 5)) return "stale";
+  if (wsAge !== null && indAge !== null && wsAge < 4 && indAge < 4) return "healthy";
+  if ((wsAge !== null && wsAge <= 10) || (indAge !== null && indAge <= 10)) return "stale";
   return "error";
 }
 

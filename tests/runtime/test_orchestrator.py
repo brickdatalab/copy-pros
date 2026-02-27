@@ -1,4 +1,5 @@
 import asyncio
+import time
 from rich.console import Console
 
 from trader.adapters.supabase.writer import BufferedSupabaseWriter
@@ -185,3 +186,118 @@ def test_position_rollup_clears_after_full_sell_fill() -> None:
 
     rollup = runtime.activity_snapshot()["position_rollup"]
     assert rollup["UP"] is None
+
+
+def test_entry_warmup_blocks_until_minimum_readiness() -> None:
+    runtime = BotRuntime(
+        cfg=TraderConfig(poly_event_input="btc-updown-5m-0", bot_mode="dry_run"),
+        console=BotConsole(console=Console(stderr=True, quiet=True)),
+        writer=BufferedSupabaseWriter(enabled=False),
+    )
+    runtime.run_started_monotonic = runtime.run_started_monotonic + 1_000.0
+    runtime.ws_ticks = 1
+    runtime.indicator_updates = 1
+
+    ready, state = runtime._entry_warmup_ready()
+
+    assert ready is False
+    assert state["required_elapsed_sec"] == runtime.cfg.entry_warmup_min_seconds
+    assert state["required_ws_ticks"] == runtime.cfg.entry_warmup_min_ws_ticks
+    assert state["required_indicator_updates"] == runtime.cfg.entry_warmup_min_indicator_updates
+
+
+async def test_wait_for_trigger_wakes_on_event() -> None:
+    """Event-driven trigger: _wait_for_trigger returns immediately when event is set."""
+    runtime = BotRuntime(
+        cfg=TraderConfig(
+            poly_event_input="btc-updown-5m-0",
+            bot_mode="dry_run",
+            enable_event_driven_loops=True,
+            event_driven_max_wait_ms=5000,
+        ),
+        console=BotConsole(console=Console(stderr=True, quiet=True)),
+        writer=BufferedSupabaseWriter(enabled=False),
+    )
+    trigger = asyncio.Event()
+    trigger.set()
+
+    start = time.monotonic()
+    await runtime._wait_for_trigger(trigger_event=trigger, fallback_interval_ms=5000)
+    elapsed_ms = (time.monotonic() - start) * 1000
+
+    assert elapsed_ms < 50, f"Should return instantly when event is set, took {elapsed_ms:.1f}ms"
+    assert not trigger.is_set(), "Event should be cleared after consumption"
+
+
+async def test_wait_for_trigger_falls_back_on_timeout() -> None:
+    """Event-driven trigger: times out at event_driven_max_wait_ms when no event fires."""
+    runtime = BotRuntime(
+        cfg=TraderConfig(
+            poly_event_input="btc-updown-5m-0",
+            bot_mode="dry_run",
+            enable_event_driven_loops=True,
+            event_driven_max_wait_ms=50,
+        ),
+        console=BotConsole(console=Console(stderr=True, quiet=True)),
+        writer=BufferedSupabaseWriter(enabled=False),
+    )
+    trigger = asyncio.Event()
+
+    start = time.monotonic()
+    await runtime._wait_for_trigger(trigger_event=trigger, fallback_interval_ms=200)
+    elapsed_ms = (time.monotonic() - start) * 1000
+
+    assert elapsed_ms < 150, f"Should timeout at max_wait_ms=50, took {elapsed_ms:.1f}ms"
+
+
+async def test_wait_for_trigger_uses_sleep_when_disabled() -> None:
+    """When enable_event_driven_loops=False, falls back to plain sleep."""
+    runtime = BotRuntime(
+        cfg=TraderConfig(
+            poly_event_input="btc-updown-5m-0",
+            bot_mode="dry_run",
+            enable_event_driven_loops=False,
+        ),
+        console=BotConsole(console=Console(stderr=True, quiet=True)),
+        writer=BufferedSupabaseWriter(enabled=False),
+    )
+    trigger = asyncio.Event()
+    trigger.set()
+
+    start = time.monotonic()
+    await runtime._wait_for_trigger(trigger_event=trigger, fallback_interval_ms=50)
+    elapsed_ms = (time.monotonic() - start) * 1000
+
+    assert elapsed_ms >= 40, f"Should sleep full interval when disabled, took {elapsed_ms:.1f}ms"
+    assert trigger.is_set(), "Event should NOT be cleared when disabled (sleep path)"
+
+
+async def test_trigger_chain_ws_wakes_indicator_event() -> None:
+    """Verify _ws_data_event is set after WS tick counter increments."""
+    runtime = BotRuntime(
+        cfg=TraderConfig(
+            poly_event_input="btc-updown-5m-0",
+            bot_mode="dry_run",
+            enable_event_driven_loops=True,
+        ),
+        console=BotConsole(console=Console(stderr=True, quiet=True)),
+        writer=BufferedSupabaseWriter(enabled=False),
+    )
+    assert not runtime._ws_data_event.is_set()
+    assert not runtime._indicator_event.is_set()
+    assert not runtime._signal_event.is_set()
+
+
+def test_entry_warmup_allows_after_minimum_readiness() -> None:
+    runtime = BotRuntime(
+        cfg=TraderConfig(poly_event_input="btc-updown-5m-0", bot_mode="dry_run"),
+        console=BotConsole(console=Console(stderr=True, quiet=True)),
+        writer=BufferedSupabaseWriter(enabled=False),
+    )
+    runtime.run_started_monotonic = time.monotonic() - (runtime.cfg.entry_warmup_min_seconds + 0.1)
+    runtime.ws_ticks = runtime.cfg.entry_warmup_min_ws_ticks
+    runtime.indicator_updates = runtime.cfg.entry_warmup_min_indicator_updates
+
+    ready, _ = runtime._entry_warmup_ready()
+
+    assert ready is True

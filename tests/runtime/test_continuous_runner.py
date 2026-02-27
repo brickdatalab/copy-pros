@@ -15,11 +15,11 @@ from trader.runtime.continuous_runner import (
 )
 
 
-def test_current_event_slug_uses_current_bucket_start() -> None:
+def test_current_event_slug_uses_current_bucket_end() -> None:
     # 2026-02-26 02:16:40 UTC
     now_ts = 1772072200
-    assert current_event_slug("btc", 15, now_ts) == "btc-updown-15m-1772072100"
-    assert current_event_slug("eth", 5, now_ts) == "eth-updown-5m-1772072100"
+    assert current_event_slug("btc", 15, now_ts) == "btc-updown-15m-1772073000"
+    assert current_event_slug("eth", 5, now_ts) == "eth-updown-5m-1772072400"
 
 
 def test_parse_market_selection_accepts_all_supported_streams() -> None:
@@ -104,6 +104,7 @@ def test_runner_control_flags_and_snapshot() -> None:
 
     runner.request_stop()
     assert runner.snapshot()["stop_requested"] is True
+    assert runner.is_paused is False
 
 
 def test_runner_snapshot_includes_default_activity_payload() -> None:

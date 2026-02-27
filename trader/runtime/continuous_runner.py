@@ -150,7 +150,8 @@ def current_event_slug(symbol: str, timeframe_minutes: int, now_ts: int | None =
     ts = int(time.time()) if now_ts is None else now_ts
     timeframe_sec = timeframe_minutes * 60
     bucket_start_ts = (ts // timeframe_sec) * timeframe_sec
-    return f"{symbol.lower()}-updown-{timeframe_minutes}m-{bucket_start_ts}"
+    bucket_end_ts = bucket_start_ts + timeframe_sec
+    return f"{symbol.lower()}-updown-{timeframe_minutes}m-{bucket_end_ts}"
 
 
 def parse_market_selection(raw: str) -> tuple[MarketSpec, ...]:
@@ -229,6 +230,7 @@ class ContinuousRunner:
         self.last_report_path: Path | None = None
         self._run_started = False
         self._run_finished = False
+        self._manual_stop_requested = False
 
     @property
     def is_paused(self) -> bool:
@@ -241,7 +243,11 @@ class ContinuousRunner:
         self.resume_event.set()
 
     def request_stop(self) -> None:
+        self._manual_stop_requested = True
         self.stop_event.set()
+        self.resume_event.set()
+        for runtime in list(self.active_runtimes.values()):
+            runtime.stop_event.set()
 
     def snapshot(self) -> dict[str, Any]:
         rollups = aggregate_market_results(self.completed_runs)
@@ -335,7 +341,8 @@ class ContinuousRunner:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
-        await self._resolve_pending_outcomes()
+        if not self._manual_stop_requested:
+            await self._resolve_pending_outcomes()
         report_path = self._write_report()
         self.last_report_path = report_path
         self._run_finished = True

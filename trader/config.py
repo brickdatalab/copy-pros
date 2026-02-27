@@ -33,9 +33,9 @@ class TraderConfig:
     hedge_max_exposure_ratio: float = 0.25
     hedge_min_confidence: float = 0.85
     hedge_max_entry_price: float = 0.35
-    max_wager_per_side_usdc: float = 5.0
+    max_wager_per_side_usdc: float = 20.0
     max_single_wager_usdc: float = 5.0
-    min_wager_usdc: float = 1.0
+    min_wager_usdc: float = 2.0
     min_shares_per_purchase: float = 5.0
     enable_convexity_budget_reservation: bool = False
     allow_both_sides: bool = True
@@ -45,10 +45,16 @@ class TraderConfig:
     take_profit_trigger_price: float = 0.94
     take_profit_limit_price: float = 0.95
     take_profit_min_remaining_sec: int = 120
+    entry_warmup_min_seconds: float = 60.0
+    entry_warmup_min_ws_ticks: int = 5
+    entry_warmup_min_indicator_updates: int = 5
+    enable_event_driven_loops: bool = True
+    event_driven_max_wait_ms: int = 250
     indicator_interval_ms: int = 100
     signal_interval_ms: int = 100
     execution_interval_ms: int = 75
     supabase_flush_interval_ms: int = 200
+    ws_tick_log_sample_every: int = 25
     min_remaining_seconds_to_run: int = 1
 
 
@@ -107,9 +113,9 @@ def load_config() -> TraderConfig:
         hedge_max_exposure_ratio=_env_float("HEDGE_MAX_EXPOSURE_RATIO", 0.25),
         hedge_min_confidence=_env_float("HEDGE_MIN_CONFIDENCE", 0.85),
         hedge_max_entry_price=_env_float("HEDGE_MAX_ENTRY_PRICE", 0.35),
-        max_wager_per_side_usdc=_env_float("MAX_WAGER_PER_SIDE_USDC", 5.0),
+        max_wager_per_side_usdc=_env_float("MAX_WAGER_PER_SIDE_USDC", 20.0),
         max_single_wager_usdc=_env_float("MAX_SINGLE_WAGER_USDC", 5.0),
-        min_wager_usdc=_env_float("MIN_WAGER_USDC", 1.0),
+        min_wager_usdc=_env_float("MIN_WAGER_USDC", 2.0),
         min_shares_per_purchase=_env_float("MIN_SHARES_PER_PURCHASE", 5.0),
         enable_convexity_budget_reservation=_env_bool("ENABLE_CONVEXITY_BUDGET_RESERVATION", False),
         allow_both_sides=_env_bool("ALLOW_BOTH_SIDES", True),
@@ -119,10 +125,16 @@ def load_config() -> TraderConfig:
         take_profit_trigger_price=_env_float("TAKE_PROFIT_TRIGGER_PRICE", 0.94),
         take_profit_limit_price=_env_float("TAKE_PROFIT_LIMIT_PRICE", 0.95),
         take_profit_min_remaining_sec=_env_int("TAKE_PROFIT_MIN_REMAINING_SEC", 120),
+        entry_warmup_min_seconds=_env_float("ENTRY_WARMUP_MIN_SECONDS", 60.0),
+        entry_warmup_min_ws_ticks=_env_int("ENTRY_WARMUP_MIN_WS_TICKS", 5),
+        entry_warmup_min_indicator_updates=_env_int("ENTRY_WARMUP_MIN_INDICATOR_UPDATES", 5),
+        enable_event_driven_loops=_env_bool("ENABLE_EVENT_DRIVEN_LOOPS", True),
+        event_driven_max_wait_ms=_env_int("EVENT_DRIVEN_MAX_WAIT_MS", 250),
         indicator_interval_ms=_env_int("INDICATOR_INTERVAL_MS", 100),
         signal_interval_ms=_env_int("SIGNAL_INTERVAL_MS", 100),
         execution_interval_ms=_env_int("EXECUTION_INTERVAL_MS", 75),
         supabase_flush_interval_ms=_env_int("SUPABASE_FLUSH_INTERVAL_MS", 200),
+        ws_tick_log_sample_every=_env_int("WS_TICK_LOG_SAMPLE_EVERY", 25),
         min_remaining_seconds_to_run=_env_int("MIN_REMAINING_SECONDS_TO_RUN", 1),
     )
 
