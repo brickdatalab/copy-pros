@@ -257,6 +257,7 @@ class BotRuntime:
             vpin_num_buckets=self.cfg.flow_vpin_num_buckets,
             large_trade_size=self.cfg.flow_large_trade_size,
             large_ratio_window_seconds=self.cfg.flow_large_ratio_window_seconds,
+            min_ew_volume=self.cfg.flow_min_ew_volume,
         )
         ctx = await fetch_event_market_context(self.cfg.poly_event_input)
         now_ts = int(time.time())

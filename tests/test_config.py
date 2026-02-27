@@ -1,5 +1,12 @@
 import pytest
 
+from trader.config import TraderConfig
+
+
+def test_config_has_flow_min_ew_volume_default() -> None:
+    cfg = TraderConfig(poly_event_input="btc-updown-5m-0", bot_mode="dry_run")
+    assert cfg.flow_min_ew_volume == 100.0
+
 
 def test_config_requires_event_identifier(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("POLY_EVENT_INPUT", raising=False)

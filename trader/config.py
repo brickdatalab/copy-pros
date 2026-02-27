@@ -19,6 +19,7 @@ class TraderConfig:
     flow_unknown_ratio_cutoff: float = 0.35
     flow_unknown_delta_scale: float = 0.5
     flow_ew_half_life_seconds: float = 15.0
+    flow_min_ew_volume: float = 100.0
     flow_vpin_bucket_volume: float = 300.0
     flow_vpin_num_buckets: int = 10
     flow_large_trade_size: float = 75.0
@@ -99,6 +100,7 @@ def load_config() -> TraderConfig:
         flow_unknown_ratio_cutoff=_env_float("FLOW_UNKNOWN_RATIO_CUTOFF", 0.35),
         flow_unknown_delta_scale=_env_float("FLOW_UNKNOWN_DELTA_SCALE", 0.5),
         flow_ew_half_life_seconds=_env_float("FLOW_EW_HALF_LIFE_SECONDS", 15.0),
+        flow_min_ew_volume=_env_float("FLOW_MIN_EW_VOLUME", 100.0),
         flow_vpin_bucket_volume=_env_float("VPIN_BUCKET_VOLUME", 300.0),
         flow_vpin_num_buckets=_env_int("VPIN_NUM_BUCKETS", 10),
         flow_large_trade_size=_env_float("LARGE_TRADE_SIZE", 75.0),

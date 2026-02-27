@@ -30,6 +30,7 @@ class MarketState:
     ew_half_life_seconds: float = 15.0
     ew_delta: float = 0.0
     ew_abs_vol: float = 0.0
+    min_ew_volume: float = 0.0
     ew_last_ts: datetime | None = None
     vpin_bucket_volume: float = 300.0
     vpin_num_buckets: int = 10
@@ -47,12 +48,14 @@ class MarketState:
         vpin_num_buckets: int,
         large_trade_size: float,
         large_ratio_window_seconds: int,
+        min_ew_volume: float = 0.0,
     ) -> None:
         self.ew_half_life_seconds = max(1e-3, ew_half_life_seconds)
         self.vpin_bucket_volume = max(1e-6, vpin_bucket_volume)
         self.vpin_num_buckets = max(1, vpin_num_buckets)
         self.flow_large_trade_size = max(0.0, large_trade_size)
         self.flow_large_ratio_window_seconds = max(1, large_ratio_window_seconds)
+        self.min_ew_volume = max(0.0, min_ew_volume)
 
     def add_trade(self, price: float, size: float, ts: datetime, side: int = 0) -> None:
         clipped_side = 1 if side > 0 else (-1 if side < 0 else 0)
@@ -80,6 +83,8 @@ class MarketState:
 
     @property
     def ew_delta_imbalance(self) -> float:
+        if self.ew_abs_vol < self.min_ew_volume:
+            return 0.0
         denom = self.ew_abs_vol + 1e-9
         value = self.ew_delta / denom
         return min(max(value, -1.0), 1.0)
