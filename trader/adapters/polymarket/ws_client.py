@@ -46,9 +46,20 @@ async def stream_market_events(asset_ids: list[str]) -> AsyncIterator[dict[str, 
                 close_timeout=10,
             ) as ws:
                 await ws.send(json.dumps({"assets_ids": asset_ids, "type": "market"}))
-                async for raw in ws:
+                while True:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=30.0)
                     payload = json.loads(raw)
                     for event in normalize_ws_payload(payload):
                         yield event
-        except (OSError, websockets.ConnectionClosed, asyncio.TimeoutError):
+        except (
+            OSError,
+            websockets.ConnectionClosed,
+            asyncio.TimeoutError,
+            websockets.InvalidStatus,
+            websockets.InvalidHandshake,
+            json.JSONDecodeError,
+        ):
+            await asyncio.sleep(1.0)
+        except Exception:
+            # Never let the market stream task die silently; reconnect.
             await asyncio.sleep(1.0)

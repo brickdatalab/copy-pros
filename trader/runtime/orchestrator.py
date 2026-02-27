@@ -55,6 +55,25 @@ _INDICATOR_ACTIVITY_KEYS: tuple[str, ...] = (
 )
 
 
+def _ingest_units_for_event(event_type: str, payload: dict[str, Any]) -> int:
+    """Estimate WS ingest workload units for UI telemetry.
+
+    Counting only one unit per WS frame can make active streams look stale when
+    large batch payloads arrive less frequently. This helper counts the size of
+    payload mutations so ingest reflects actual applied market data volume.
+    """
+    if event_type == "book":
+        bids = payload.get("bids")
+        asks = payload.get("asks")
+        bid_n = len(bids) if isinstance(bids, list) else 0
+        ask_n = len(asks) if isinstance(asks, list) else 0
+        return max(1, bid_n + ask_n)
+    if event_type == "price_change":
+        changes = payload.get("changes")
+        return max(1, len(changes) if isinstance(changes, list) else 0)
+    return 1
+
+
 def empty_runtime_activity_snapshot() -> dict[str, Any]:
     return {
         "ws_ticks": 0,
@@ -412,7 +431,7 @@ class BotRuntime:
                                 ts=datetime.now(tz=timezone.utc),
                             )
 
-            self.ws_ticks += 1
+            self.ws_ticks += _ingest_units_for_event(event_type, msg)
             self.ws_last_event_type = event_type
             self.ws_last_ts = time.time()
             self._ws_data_event.set()
@@ -431,6 +450,8 @@ class BotRuntime:
                 trigger_event=self._ws_data_event,
                 fallback_interval_ms=self.cfg.indicator_interval_ms,
             )
+            if self.cfg.enable_event_driven_loops and not triggered:
+                continue
             now = datetime.now(tz=timezone.utc)
             async with self.state_lock:
                 self.indicators = self.indicator_engine.compute(
@@ -450,6 +471,8 @@ class BotRuntime:
                 trigger_event=self._indicator_event,
                 fallback_interval_ms=self.cfg.signal_interval_ms,
             )
+            if self.cfg.enable_event_driven_loops and not triggered:
+                continue
 
             remaining_sec = max(0, ctx.end_ts - int(time.time()))
             if remaining_sec == 0:

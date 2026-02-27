@@ -7,6 +7,7 @@ from trader.config import TraderConfig
 from trader.runtime.orchestrator import (
     BotRuntime,
     _flow_blocks_entry,
+    _ingest_units_for_event,
     _map_reversal_block_reason,
     compute_target_runtime_seconds,
 )
@@ -270,6 +271,79 @@ async def test_wait_for_trigger_uses_sleep_when_disabled() -> None:
 
     assert elapsed_ms >= 40, f"Should sleep full interval when disabled, took {elapsed_ms:.1f}ms"
     assert trigger.is_set(), "Event should NOT be cleared when disabled (sleep path)"
+
+
+def test_ingest_units_counts_payload_volume() -> None:
+    assert _ingest_units_for_event("book", {"bids": [["0.5", "10"], ["0.4", "8"]], "asks": [["0.6", "12"]]}) == 3
+    assert _ingest_units_for_event("price_change", {"changes": [["BUY", "0.5", "10"], ["SELL", "0.6", "4"]]}) == 2
+    assert _ingest_units_for_event("last_trade_price", {"price": "0.5"}) == 1
+    assert _ingest_units_for_event("heartbeat", {}) == 1
+
+
+async def test_signal_loop_skips_timeout_ticks_when_event_driven_enabled() -> None:
+    runtime = BotRuntime(
+        cfg=TraderConfig(
+            poly_event_input="btc-updown-5m-0",
+            bot_mode="dry_run",
+            enable_event_driven_loops=True,
+        ),
+        console=BotConsole(console=Console(stderr=True, quiet=True)),
+        writer=BufferedSupabaseWriter(enabled=False),
+    )
+    runtime.indicators = {"mid_price": 0.5, "order_imbalance": 0.0}
+
+    calls = 0
+
+    async def _fake_wait_for_trigger(*, trigger_event: asyncio.Event, fallback_interval_ms: int) -> bool:
+        nonlocal calls
+        calls += 1
+        runtime.stop_event.set()
+        return False
+
+    runtime._wait_for_trigger = _fake_wait_for_trigger  # type: ignore[method-assign]
+
+    now = int(time.time())
+    ctx = type(
+        "Ctx",
+        (),
+        {
+            "end_ts": now + 60,
+            "token_up": "up",
+            "token_down": "down",
+        },
+    )()
+
+    await runtime._signal_loop(ctx, "run-1")  # type: ignore[arg-type]
+
+    assert calls == 1
+    assert runtime.decisions_count == 0
+
+
+async def test_indicator_loop_skips_timeout_ticks_when_event_driven_enabled() -> None:
+    runtime = BotRuntime(
+        cfg=TraderConfig(
+            poly_event_input="btc-updown-5m-0",
+            bot_mode="dry_run",
+            enable_event_driven_loops=True,
+        ),
+        console=BotConsole(console=Console(stderr=True, quiet=True)),
+        writer=BufferedSupabaseWriter(enabled=False),
+    )
+
+    calls = 0
+
+    async def _fake_wait_for_trigger(*, trigger_event: asyncio.Event, fallback_interval_ms: int) -> bool:
+        nonlocal calls
+        calls += 1
+        runtime.stop_event.set()
+        return False
+
+    runtime._wait_for_trigger = _fake_wait_for_trigger  # type: ignore[method-assign]
+
+    await runtime._indicator_loop()
+
+    assert calls == 1
+    assert runtime.indicator_updates == 0
 
 
 async def test_trigger_chain_ws_wakes_indicator_event() -> None:
