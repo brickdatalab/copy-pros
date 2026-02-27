@@ -150,8 +150,7 @@ def current_event_slug(symbol: str, timeframe_minutes: int, now_ts: int | None =
     ts = int(time.time()) if now_ts is None else now_ts
     timeframe_sec = timeframe_minutes * 60
     bucket_start_ts = (ts // timeframe_sec) * timeframe_sec
-    bucket_end_ts = bucket_start_ts + timeframe_sec
-    return f"{symbol.lower()}-updown-{timeframe_minutes}m-{bucket_end_ts}"
+    return f"{symbol.lower()}-updown-{timeframe_minutes}m-{bucket_start_ts}"
 
 
 def parse_market_selection(raw: str) -> tuple[MarketSpec, ...]:
