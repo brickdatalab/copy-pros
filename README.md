@@ -280,9 +280,9 @@ All limits are env-driven (`trader/config.py`, `.env.example`).
 Default constraints:
 
 - `MAX_ENTRY_PRICE=0.80`
-- `MAX_WAGER_PER_SIDE_USDC=5`
+- `MAX_WAGER_PER_SIDE_USDC=20`
 - `MAX_SINGLE_WAGER_USDC=5`
-- `MIN_WAGER_USDC=1`
+- `MIN_WAGER_USDC=2`
 - `MIN_SHARES_PER_PURCHASE=5`
 - `ALLOW_BOTH_SIDES=true`
 - `COUNT_OPEN_ORDERS_IN_EXPOSURE=true`
@@ -319,13 +319,18 @@ Cadence defaults:
 - `SIGNAL_INTERVAL_MS=100`
 - `EXECUTION_INTERVAL_MS=75`
 - `SUPABASE_FLUSH_INTERVAL_MS=200`
+- `ENTRY_WARMUP_MIN_SECONDS=60` (startup gate before first entries)
+- `ENTRY_WARMUP_MIN_WS_TICKS=5`
+- `ENTRY_WARMUP_MIN_INDICATOR_UPDATES=5`
+- `ENABLE_EVENT_DRIVEN_LOOPS=true` (wake indicator/signal/execution loops on new data)
+- `EVENT_DRIVEN_MAX_WAIT_MS=250` (fallback max wait to keep housekeeping active)
 
 ## Continuous Runner
 
 `trader/runtime/continuous_runner.py`:
 
 - Runs selected market workers in parallel.
-- Each worker auto-discovers the current active slug from bucket start time.
+- Each worker auto-discovers the current active slug from bucket end time (Polymarket up/down market convention).
 - When one event ends, worker advances to the next active event automatically.
 - Supports terminal controls:
   - `p` to pause/resume

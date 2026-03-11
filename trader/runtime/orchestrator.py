@@ -55,6 +55,25 @@ _INDICATOR_ACTIVITY_KEYS: tuple[str, ...] = (
 )
 
 
+def _ingest_units_for_event(event_type: str, payload: dict[str, Any]) -> int:
+    """Estimate WS ingest workload units for UI telemetry.
+
+    Counting only one unit per WS frame can make active streams look stale when
+    large batch payloads arrive less frequently. This helper counts the size of
+    payload mutations so ingest reflects actual applied market data volume.
+    """
+    if event_type == "book":
+        bids = payload.get("bids")
+        asks = payload.get("asks")
+        bid_n = len(bids) if isinstance(bids, list) else 0
+        ask_n = len(asks) if isinstance(asks, list) else 0
+        return max(1, bid_n + ask_n)
+    if event_type == "price_change":
+        changes = payload.get("changes")
+        return max(1, len(changes) if isinstance(changes, list) else 0)
+    return 1
+
+
 def empty_runtime_activity_snapshot() -> dict[str, Any]:
     return {
         "ws_ticks": 0,
@@ -185,6 +204,11 @@ class BotRuntime:
     last_order_ts: float | None = None
     flow_weight_preset_used: str = "flow_v1"
     flow_blocked_entries_count: int = 0
+    run_started_monotonic: float = field(default_factory=time.monotonic)
+    last_warmup_block_log_ts: float = 0.0
+    _ws_data_event: asyncio.Event = field(default_factory=asyncio.Event)
+    _indicator_event: asyncio.Event = field(default_factory=asyncio.Event)
+    _signal_event: asyncio.Event = field(default_factory=asyncio.Event)
 
     def activity_snapshot(self) -> dict[str, Any]:
         snapshot = empty_runtime_activity_snapshot()
@@ -228,6 +252,7 @@ class BotRuntime:
         return snapshot
 
     async def run(self) -> EventRunResult | None:
+        self.run_started_monotonic = time.monotonic()
         flow_weight_preset = "flow_v1" if self.cfg.flow_weight_preset == "v1" else self.cfg.flow_weight_preset
         self.flow_weight_preset_used = flow_weight_preset
         self.decision_policy = DecisionPolicy(
@@ -251,6 +276,7 @@ class BotRuntime:
             vpin_num_buckets=self.cfg.flow_vpin_num_buckets,
             large_trade_size=self.cfg.flow_large_trade_size,
             large_ratio_window_seconds=self.cfg.flow_large_ratio_window_seconds,
+            min_ew_volume=self.cfg.flow_min_ew_volume,
         )
         ctx = await fetch_event_market_context(self.cfg.poly_event_input)
         now_ts = int(time.time())
@@ -364,61 +390,95 @@ class BotRuntime:
                 )
 
     async def _ws_ingest_loop(self, ctx: EventMarketContext, run_id: str) -> None:
-        async for msg in stream_market_events([ctx.token_up, ctx.token_down]):
-            if self.stop_event.is_set():
-                return
+        while not self.stop_event.is_set():
+            try:
+                async for msg in stream_market_events([ctx.token_up, ctx.token_down]):
+                    if self.stop_event.is_set():
+                        return
 
-            asset_id = str(msg.get("asset_id", ""))
-            event_type = str(msg.get("event_type", ""))
-            if not asset_id or not event_type:
-                continue
+                    asset_id = str(msg.get("asset_id", ""))
+                    event_type = str(msg.get("event_type", ""))
+                    if not asset_id or not event_type:
+                        continue
 
-            async with self.state_lock:
-                book = self.market_state.book_yes if asset_id == ctx.token_up else self.market_state.book_no
+                    self.ws_ticks += _ingest_units_for_event(event_type, msg)
+                    self.ws_last_event_type = event_type
+                    self.ws_last_ts = time.time()
+                    self._ws_data_event.set()
 
-                if event_type == "book":
-                    bids = msg.get("bids", [])
-                    asks = msg.get("asks", [])
-                    if isinstance(bids, list) and isinstance(asks, list):
-                        book.apply_snapshot(bids=bids, asks=asks)
-                elif event_type == "price_change":
-                    changes = msg.get("changes", [])
-                    if isinstance(changes, list):
-                        book.apply_change(changes=changes)
-                elif event_type == "last_trade_price":
-                    if asset_id == ctx.token_up:
-                        price = _to_float(msg.get("price"))
-                        size = _to_float(msg.get("size"))
-                        if price is not None and size is not None and price > 0 and size > 0:
-                            bid = self.market_state.book_yes.best_bid
-                            ask = self.market_state.book_yes.best_ask
-                            side = classify_trade_side(
-                                price=price,
-                                best_bid=bid if bid > 0 else None,
-                                best_ask=ask if ask > 0 else None,
-                                tolerance=self.cfg.trade_side_tolerance,
-                            )
-                            self.market_state.add_trade(
-                                price=price,
-                                size=size,
-                                side=side,
-                                ts=datetime.now(tz=timezone.utc),
-                            )
+                    try:
+                        async with self.state_lock:
+                            book = self.market_state.book_yes if asset_id == ctx.token_up else self.market_state.book_no
 
-            self.ws_ticks += 1
-            self.ws_last_event_type = event_type
-            self.ws_last_ts = time.time()
+                            if event_type == "book":
+                                bids = msg.get("bids", [])
+                                asks = msg.get("asks", [])
+                                if isinstance(bids, list) and isinstance(asks, list):
+                                    book.apply_snapshot(bids=bids, asks=asks)
+                            elif event_type == "price_change":
+                                changes = msg.get("changes", [])
+                                if isinstance(changes, list):
+                                    book.apply_change(changes=changes)
+                            elif event_type == "last_trade_price":
+                                if asset_id == ctx.token_up:
+                                    price = _to_float(msg.get("price"))
+                                    size = _to_float(msg.get("size"))
+                                    if price is not None and size is not None and price > 0 and size > 0:
+                                        bid = self.market_state.book_yes.best_bid
+                                        ask = self.market_state.book_yes.best_ask
+                                        side = classify_trade_side(
+                                            price=price,
+                                            best_bid=bid if bid > 0 else None,
+                                            best_ask=ask if ask > 0 else None,
+                                            tolerance=self.cfg.trade_side_tolerance,
+                                        )
+                                        self.market_state.add_trade(
+                                            price=price,
+                                            size=size,
+                                            side=side,
+                                            ts=datetime.now(tz=timezone.utc),
+                                        )
+                    except Exception as err:
+                        # Keep stream alive on malformed payloads; dropping one frame is
+                        # safer than killing the market ingest task.
+                        await self.writer.enqueue_runtime_event(
+                            run_id,
+                            "warn",
+                            "ws_message_process_error",
+                            {
+                                "asset_id": asset_id,
+                                "event_type": event_type,
+                                "error": str(err)[:200],
+                            },
+                        )
+                        continue
 
-            await self.writer.enqueue_runtime_event(
-                run_id,
-                "info",
-                "ws_tick",
-                {"event_type": event_type, "asset_id": asset_id},
-            )
+                    if self.cfg.ws_tick_log_sample_every > 0 and (self.ws_ticks % self.cfg.ws_tick_log_sample_every) == 0:
+                        await self.writer.enqueue_runtime_event(
+                            run_id,
+                            "info",
+                            "ws_tick",
+                            {"event_type": event_type, "asset_id": asset_id},
+                        )
+            except Exception as err:
+                if self.stop_event.is_set():
+                    return
+                await self.writer.enqueue_runtime_event(
+                    run_id,
+                    "warn",
+                    "ws_stream_recovered",
+                    {"error": str(err)[:200]},
+                )
+                await asyncio.sleep(0.25)
 
     async def _indicator_loop(self) -> None:
         while not self.stop_event.is_set():
-            await asyncio.sleep(self.cfg.indicator_interval_ms / 1000)
+            triggered = await self._wait_for_trigger(
+                trigger_event=self._ws_data_event,
+                fallback_interval_ms=self.cfg.indicator_interval_ms,
+            )
+            if self.cfg.enable_event_driven_loops and not triggered:
+                continue
             now = datetime.now(tz=timezone.utc)
             async with self.state_lock:
                 self.indicators = self.indicator_engine.compute(
@@ -428,11 +488,18 @@ class BotRuntime:
             self.indicator_updates += 1
             self.indicator_last_ts = time.time()
             self.last_indicator_snapshot = _compact_indicator_snapshot(self.indicators)
+            if triggered:
+                self._indicator_event.set()
 
     async def _signal_loop(self, ctx: EventMarketContext, run_id: str) -> None:
         while not self.stop_event.is_set():
             await self._wait_until_resumed()
-            await asyncio.sleep(self.cfg.signal_interval_ms / 1000)
+            triggered = await self._wait_for_trigger(
+                trigger_event=self._indicator_event,
+                fallback_interval_ms=self.cfg.signal_interval_ms,
+            )
+            if self.cfg.enable_event_driven_loops and not triggered:
+                continue
 
             remaining_sec = max(0, ctx.end_ts - int(time.time()))
             if remaining_sec == 0:
@@ -517,7 +584,11 @@ class BotRuntime:
                 streak=streak,
                 remaining_sec=remaining_sec,
             )
+            warmup_ok, warmup_state = self._entry_warmup_ready()
             if decision.action == DecisionAction.BUY_UP and up_ask > 0:
+                if not warmup_ok:
+                    await self._log_warmup_block(run_id=run_id, side="UP", warmup_state=warmup_state)
+                    continue
                 if _flow_blocks_entry(
                     action=decision.action,
                     ew_delta_imbalance=ew_delta_imbalance,
@@ -606,6 +677,9 @@ class BotRuntime:
                         },
                     )
             elif decision.action == DecisionAction.BUY_DOWN and down_ask > 0:
+                if not warmup_ok:
+                    await self._log_warmup_block(run_id=run_id, side="DOWN", warmup_state=warmup_state)
+                    continue
                 if _flow_blocks_entry(
                     action=decision.action,
                     ew_delta_imbalance=ew_delta_imbalance,
@@ -703,10 +777,49 @@ class BotRuntime:
                         }
                     )
 
+            if triggered:
+                self._signal_event.set()
+
+    def _entry_warmup_ready(self) -> tuple[bool, dict[str, float | int]]:
+        elapsed_sec = max(0.0, time.monotonic() - self.run_started_monotonic)
+        state: dict[str, float | int] = {
+            "elapsed_sec": round(elapsed_sec, 3),
+            "ws_ticks": self.ws_ticks,
+            "indicator_updates": self.indicator_updates,
+            "required_elapsed_sec": self.cfg.entry_warmup_min_seconds,
+            "required_ws_ticks": self.cfg.entry_warmup_min_ws_ticks,
+            "required_indicator_updates": self.cfg.entry_warmup_min_indicator_updates,
+        }
+        ready = (
+            elapsed_sec >= self.cfg.entry_warmup_min_seconds
+            and self.ws_ticks >= self.cfg.entry_warmup_min_ws_ticks
+            and self.indicator_updates >= self.cfg.entry_warmup_min_indicator_updates
+        )
+        return ready, state
+
+    async def _log_warmup_block(self, run_id: str, side: str, warmup_state: dict[str, float | int]) -> None:
+        now_ts = time.time()
+        if now_ts - self.last_warmup_block_log_ts < 0.5:
+            return
+        self.last_warmup_block_log_ts = now_ts
+        await self.writer.enqueue_runtime_event(
+            run_id,
+            "info",
+            "entry_blocked",
+            {
+                "reason_code": "entry_blocked_warmup_not_ready",
+                "side": side,
+                "warmup": warmup_state,
+            },
+        )
+
     async def _execution_loop(self, ctx: EventMarketContext, run_id: str, trading_client: TradingClient) -> None:
         while not self.stop_event.is_set():
             await self._wait_until_resumed()
-            await asyncio.sleep(self.cfg.execution_interval_ms / 1000)
+            await self._wait_for_trigger(
+                trigger_event=self._signal_event,
+                fallback_interval_ms=self.cfg.execution_interval_ms,
+            )
 
             while not self.intents.empty():
                 intent = await self.intents.get()
@@ -1190,6 +1303,24 @@ class BotRuntime:
             return
         while not self.stop_event.is_set() and not self.resume_event.is_set():
             await asyncio.sleep(0.1)
+
+    async def _wait_for_trigger(self, *, trigger_event: asyncio.Event, fallback_interval_ms: int) -> bool:
+        """Wait for a trigger event or timeout.
+
+        Returns True if the event fired (real data), False on timeout.
+        """
+        if not self.cfg.enable_event_driven_loops:
+            await asyncio.sleep(max(1, fallback_interval_ms) / 1000)
+            return True
+
+        timeout_ms = max(1, min(max(1, fallback_interval_ms), self.cfg.event_driven_max_wait_ms))
+        try:
+            await asyncio.wait_for(trigger_event.wait(), timeout=timeout_ms / 1000)
+        except TimeoutError:
+            return False
+        trigger_event.clear()
+        return True
+
 
     def _advance_signal_streak(self, action: DecisionAction) -> int:
         if action in {DecisionAction.BUY_UP, DecisionAction.BUY_DOWN}:

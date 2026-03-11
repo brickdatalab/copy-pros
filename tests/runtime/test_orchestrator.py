@@ -1,11 +1,14 @@
 import asyncio
+import time
 from rich.console import Console
+import types
 
 from trader.adapters.supabase.writer import BufferedSupabaseWriter
 from trader.config import TraderConfig
 from trader.runtime.orchestrator import (
     BotRuntime,
     _flow_blocks_entry,
+    _ingest_units_for_event,
     _map_reversal_block_reason,
     compute_target_runtime_seconds,
 )
@@ -185,3 +188,271 @@ def test_position_rollup_clears_after_full_sell_fill() -> None:
 
     rollup = runtime.activity_snapshot()["position_rollup"]
     assert rollup["UP"] is None
+
+
+def test_entry_warmup_blocks_until_minimum_readiness() -> None:
+    runtime = BotRuntime(
+        cfg=TraderConfig(poly_event_input="btc-updown-5m-0", bot_mode="dry_run"),
+        console=BotConsole(console=Console(stderr=True, quiet=True)),
+        writer=BufferedSupabaseWriter(enabled=False),
+    )
+    runtime.run_started_monotonic = runtime.run_started_monotonic + 1_000.0
+    runtime.ws_ticks = 1
+    runtime.indicator_updates = 1
+
+    ready, state = runtime._entry_warmup_ready()
+
+    assert ready is False
+    assert state["required_elapsed_sec"] == runtime.cfg.entry_warmup_min_seconds
+    assert state["required_ws_ticks"] == runtime.cfg.entry_warmup_min_ws_ticks
+    assert state["required_indicator_updates"] == runtime.cfg.entry_warmup_min_indicator_updates
+
+
+async def test_wait_for_trigger_wakes_on_event() -> None:
+    """Event-driven trigger: _wait_for_trigger returns immediately when event is set."""
+    runtime = BotRuntime(
+        cfg=TraderConfig(
+            poly_event_input="btc-updown-5m-0",
+            bot_mode="dry_run",
+            enable_event_driven_loops=True,
+            event_driven_max_wait_ms=5000,
+        ),
+        console=BotConsole(console=Console(stderr=True, quiet=True)),
+        writer=BufferedSupabaseWriter(enabled=False),
+    )
+    trigger = asyncio.Event()
+    trigger.set()
+
+    start = time.monotonic()
+    await runtime._wait_for_trigger(trigger_event=trigger, fallback_interval_ms=5000)
+    elapsed_ms = (time.monotonic() - start) * 1000
+
+    assert elapsed_ms < 50, f"Should return instantly when event is set, took {elapsed_ms:.1f}ms"
+    assert not trigger.is_set(), "Event should be cleared after consumption"
+
+
+async def test_wait_for_trigger_falls_back_on_timeout() -> None:
+    """Event-driven trigger: times out at event_driven_max_wait_ms when no event fires."""
+    runtime = BotRuntime(
+        cfg=TraderConfig(
+            poly_event_input="btc-updown-5m-0",
+            bot_mode="dry_run",
+            enable_event_driven_loops=True,
+            event_driven_max_wait_ms=50,
+        ),
+        console=BotConsole(console=Console(stderr=True, quiet=True)),
+        writer=BufferedSupabaseWriter(enabled=False),
+    )
+    trigger = asyncio.Event()
+
+    start = time.monotonic()
+    await runtime._wait_for_trigger(trigger_event=trigger, fallback_interval_ms=200)
+    elapsed_ms = (time.monotonic() - start) * 1000
+
+    assert elapsed_ms < 150, f"Should timeout at max_wait_ms=50, took {elapsed_ms:.1f}ms"
+
+
+async def test_wait_for_trigger_uses_sleep_when_disabled() -> None:
+    """When enable_event_driven_loops=False, falls back to plain sleep."""
+    runtime = BotRuntime(
+        cfg=TraderConfig(
+            poly_event_input="btc-updown-5m-0",
+            bot_mode="dry_run",
+            enable_event_driven_loops=False,
+        ),
+        console=BotConsole(console=Console(stderr=True, quiet=True)),
+        writer=BufferedSupabaseWriter(enabled=False),
+    )
+    trigger = asyncio.Event()
+    trigger.set()
+
+    start = time.monotonic()
+    await runtime._wait_for_trigger(trigger_event=trigger, fallback_interval_ms=50)
+    elapsed_ms = (time.monotonic() - start) * 1000
+
+    assert elapsed_ms >= 40, f"Should sleep full interval when disabled, took {elapsed_ms:.1f}ms"
+    assert trigger.is_set(), "Event should NOT be cleared when disabled (sleep path)"
+
+
+def test_ingest_units_counts_payload_volume() -> None:
+    assert _ingest_units_for_event("book", {"bids": [["0.5", "10"], ["0.4", "8"]], "asks": [["0.6", "12"]]}) == 3
+    assert _ingest_units_for_event("price_change", {"changes": [["BUY", "0.5", "10"], ["SELL", "0.6", "4"]]}) == 2
+    assert _ingest_units_for_event("last_trade_price", {"price": "0.5"}) == 1
+    assert _ingest_units_for_event("heartbeat", {}) == 1
+
+
+async def test_signal_loop_skips_timeout_ticks_when_event_driven_enabled() -> None:
+    runtime = BotRuntime(
+        cfg=TraderConfig(
+            poly_event_input="btc-updown-5m-0",
+            bot_mode="dry_run",
+            enable_event_driven_loops=True,
+        ),
+        console=BotConsole(console=Console(stderr=True, quiet=True)),
+        writer=BufferedSupabaseWriter(enabled=False),
+    )
+    runtime.indicators = {"mid_price": 0.5, "order_imbalance": 0.0}
+
+    calls = 0
+
+    async def _fake_wait_for_trigger(*, trigger_event: asyncio.Event, fallback_interval_ms: int) -> bool:
+        nonlocal calls
+        calls += 1
+        runtime.stop_event.set()
+        return False
+
+    runtime._wait_for_trigger = _fake_wait_for_trigger  # type: ignore[method-assign]
+
+    now = int(time.time())
+    ctx = type(
+        "Ctx",
+        (),
+        {
+            "end_ts": now + 60,
+            "token_up": "up",
+            "token_down": "down",
+        },
+    )()
+
+    await runtime._signal_loop(ctx, "run-1")  # type: ignore[arg-type]
+
+    assert calls == 1
+    assert runtime.decisions_count == 0
+
+
+async def test_indicator_loop_skips_timeout_ticks_when_event_driven_enabled() -> None:
+    runtime = BotRuntime(
+        cfg=TraderConfig(
+            poly_event_input="btc-updown-5m-0",
+            bot_mode="dry_run",
+            enable_event_driven_loops=True,
+        ),
+        console=BotConsole(console=Console(stderr=True, quiet=True)),
+        writer=BufferedSupabaseWriter(enabled=False),
+    )
+
+    calls = 0
+
+    async def _fake_wait_for_trigger(*, trigger_event: asyncio.Event, fallback_interval_ms: int) -> bool:
+        nonlocal calls
+        calls += 1
+        runtime.stop_event.set()
+        return False
+
+    runtime._wait_for_trigger = _fake_wait_for_trigger  # type: ignore[method-assign]
+
+    await runtime._indicator_loop()
+
+    assert calls == 1
+    assert runtime.indicator_updates == 0
+
+
+async def test_ws_ingest_loop_survives_bad_payload_and_continues(monkeypatch) -> None:
+    runtime = BotRuntime(
+        cfg=TraderConfig(
+            poly_event_input="btc-updown-5m-0",
+            bot_mode="dry_run",
+        ),
+        console=BotConsole(console=Console(stderr=True, quiet=True)),
+        writer=BufferedSupabaseWriter(enabled=False),
+    )
+
+    async def fake_stream_market_events(_asset_ids: list[str]):
+        # Malformed price in first payload should not kill ingest loop.
+        yield {
+            "asset_id": "up-token",
+            "event_type": "price_change",
+            "changes": [{"side": "BUY", "price": "NaN_BAD", "size": "5"}],
+        }
+        # Valid payload afterwards proves loop continues.
+        yield {
+            "asset_id": "up-token",
+            "event_type": "book",
+            "bids": [{"price": "0.49", "size": "20"}],
+            "asks": [{"price": "0.51", "size": "18"}],
+        }
+        runtime.stop_event.set()
+
+    monkeypatch.setattr("trader.runtime.orchestrator.stream_market_events", fake_stream_market_events)
+
+    ctx = types.SimpleNamespace(token_up="up-token", token_down="down-token")
+
+    await runtime._ws_ingest_loop(ctx, "run-1")  # type: ignore[arg-type]
+
+    # We should have processed at least the valid book event after the malformed frame.
+    assert runtime.ws_ticks >= 2
+    assert runtime.market_state.book_yes.best_bid == 0.49
+    assert runtime.ws_last_event_type == "book"
+
+
+async def test_ws_ingest_loop_recovers_after_unexpected_stream_error(monkeypatch) -> None:
+    runtime = BotRuntime(
+        cfg=TraderConfig(
+            poly_event_input="btc-updown-5m-0",
+            bot_mode="dry_run",
+        ),
+        console=BotConsole(console=Console(stderr=True, quiet=True)),
+        writer=BufferedSupabaseWriter(enabled=False),
+    )
+
+    calls = 0
+
+    async def fake_stream_market_events(_asset_ids: list[str]):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            yield {
+                "asset_id": "up-token",
+                "event_type": "book",
+                "bids": [{"price": "0.49", "size": "20"}],
+                "asks": [{"price": "0.51", "size": "18"}],
+            }
+            raise RuntimeError("synthetic ws failure")
+        yield {
+            "asset_id": "up-token",
+            "event_type": "book",
+            "bids": [{"price": "0.50", "size": "21"}],
+            "asks": [{"price": "0.52", "size": "19"}],
+        }
+        runtime.stop_event.set()
+
+    monkeypatch.setattr("trader.runtime.orchestrator.stream_market_events", fake_stream_market_events)
+
+    ctx = types.SimpleNamespace(token_up="up-token", token_down="down-token")
+
+    await runtime._ws_ingest_loop(ctx, "run-1")  # type: ignore[arg-type]
+
+    assert calls >= 2
+    assert runtime.ws_ticks >= 2
+    assert runtime.market_state.book_yes.best_bid == 0.50
+
+
+async def test_trigger_chain_ws_wakes_indicator_event() -> None:
+    """Verify _ws_data_event is set after WS tick counter increments."""
+    runtime = BotRuntime(
+        cfg=TraderConfig(
+            poly_event_input="btc-updown-5m-0",
+            bot_mode="dry_run",
+            enable_event_driven_loops=True,
+        ),
+        console=BotConsole(console=Console(stderr=True, quiet=True)),
+        writer=BufferedSupabaseWriter(enabled=False),
+    )
+    assert not runtime._ws_data_event.is_set()
+    assert not runtime._indicator_event.is_set()
+    assert not runtime._signal_event.is_set()
+
+
+def test_entry_warmup_allows_after_minimum_readiness() -> None:
+    runtime = BotRuntime(
+        cfg=TraderConfig(poly_event_input="btc-updown-5m-0", bot_mode="dry_run"),
+        console=BotConsole(console=Console(stderr=True, quiet=True)),
+        writer=BufferedSupabaseWriter(enabled=False),
+    )
+    runtime.run_started_monotonic = time.monotonic() - (runtime.cfg.entry_warmup_min_seconds + 0.1)
+    runtime.ws_ticks = runtime.cfg.entry_warmup_min_ws_ticks
+    runtime.indicator_updates = runtime.cfg.entry_warmup_min_indicator_updates
+
+    ready, _ = runtime._entry_warmup_ready()
+
+    assert ready is True

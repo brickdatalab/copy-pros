@@ -1,5 +1,12 @@
 import pytest
 
+from trader.config import TraderConfig
+
+
+def test_config_has_flow_min_ew_volume_default() -> None:
+    cfg = TraderConfig(poly_event_input="btc-updown-5m-0", bot_mode="dry_run")
+    assert cfg.flow_min_ew_volume == 100.0
+
 
 def test_config_requires_event_identifier(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("POLY_EVENT_INPUT", raising=False)
@@ -38,7 +45,7 @@ def test_config_loads_default_constraints(monkeypatch: pytest.MonkeyPatch) -> No
     assert cfg.hedge_max_exposure_ratio == 0.25
     assert cfg.hedge_min_confidence == 0.85
     assert cfg.hedge_max_entry_price == 0.35
-    assert cfg.max_wager_per_side_usdc == 5.0
+    assert cfg.max_wager_per_side_usdc == 20.0
     assert cfg.max_single_wager_usdc == 5.0
-    assert cfg.min_wager_usdc == 1.0
+    assert cfg.min_wager_usdc == 2.0
     assert cfg.min_shares_per_purchase == 5.0

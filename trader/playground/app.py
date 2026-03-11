@@ -93,14 +93,23 @@ class PlaygroundController:
         return self._latest_snapshot
 
     async def stop(self) -> dict[str, object]:
+        runner_task: asyncio.Task[None] | None = None
         async with self._lock:
             runner = self._runner
             if runner is None:
                 return self._latest_snapshot
             runner.request_stop()
+            runner_task = self._runner_task
             self._latest_snapshot = runner.snapshot()
-        await self._broadcast(self._latest_snapshot)
-        return self._latest_snapshot
+        if runner_task is not None and not runner_task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(runner_task), timeout=3.0)
+            except TimeoutError:
+                pass
+        async with self._lock:
+            latest = dict(self._latest_snapshot)
+        await self._broadcast(latest)
+        return latest
 
     async def state(self) -> dict[str, object]:
         async with self._lock:

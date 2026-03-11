@@ -229,6 +229,7 @@ class ContinuousRunner:
         self.last_report_path: Path | None = None
         self._run_started = False
         self._run_finished = False
+        self._manual_stop_requested = False
 
     @property
     def is_paused(self) -> bool:
@@ -241,7 +242,11 @@ class ContinuousRunner:
         self.resume_event.set()
 
     def request_stop(self) -> None:
+        self._manual_stop_requested = True
         self.stop_event.set()
+        self.resume_event.set()
+        for runtime in list(self.active_runtimes.values()):
+            runtime.stop_event.set()
 
     def snapshot(self) -> dict[str, Any]:
         rollups = aggregate_market_results(self.completed_runs)
@@ -335,7 +340,8 @@ class ContinuousRunner:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
-        await self._resolve_pending_outcomes()
+        if not self._manual_stop_requested:
+            await self._resolve_pending_outcomes()
         report_path = self._write_report()
         self.last_report_path = report_path
         self._run_finished = True

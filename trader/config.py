@@ -19,6 +19,7 @@ class TraderConfig:
     flow_unknown_ratio_cutoff: float = 0.35
     flow_unknown_delta_scale: float = 0.5
     flow_ew_half_life_seconds: float = 15.0
+    flow_min_ew_volume: float = 100.0
     flow_vpin_bucket_volume: float = 300.0
     flow_vpin_num_buckets: int = 10
     flow_large_trade_size: float = 75.0
@@ -33,9 +34,9 @@ class TraderConfig:
     hedge_max_exposure_ratio: float = 0.25
     hedge_min_confidence: float = 0.85
     hedge_max_entry_price: float = 0.35
-    max_wager_per_side_usdc: float = 5.0
+    max_wager_per_side_usdc: float = 20.0
     max_single_wager_usdc: float = 5.0
-    min_wager_usdc: float = 1.0
+    min_wager_usdc: float = 2.0
     min_shares_per_purchase: float = 5.0
     enable_convexity_budget_reservation: bool = False
     allow_both_sides: bool = True
@@ -45,10 +46,16 @@ class TraderConfig:
     take_profit_trigger_price: float = 0.94
     take_profit_limit_price: float = 0.95
     take_profit_min_remaining_sec: int = 120
+    entry_warmup_min_seconds: float = 60.0
+    entry_warmup_min_ws_ticks: int = 5
+    entry_warmup_min_indicator_updates: int = 5
+    enable_event_driven_loops: bool = True
+    event_driven_max_wait_ms: int = 250
     indicator_interval_ms: int = 100
     signal_interval_ms: int = 100
     execution_interval_ms: int = 75
     supabase_flush_interval_ms: int = 200
+    ws_tick_log_sample_every: int = 25
     min_remaining_seconds_to_run: int = 1
 
 
@@ -93,6 +100,7 @@ def load_config() -> TraderConfig:
         flow_unknown_ratio_cutoff=_env_float("FLOW_UNKNOWN_RATIO_CUTOFF", 0.35),
         flow_unknown_delta_scale=_env_float("FLOW_UNKNOWN_DELTA_SCALE", 0.5),
         flow_ew_half_life_seconds=_env_float("FLOW_EW_HALF_LIFE_SECONDS", 15.0),
+        flow_min_ew_volume=_env_float("FLOW_MIN_EW_VOLUME", 100.0),
         flow_vpin_bucket_volume=_env_float("VPIN_BUCKET_VOLUME", 300.0),
         flow_vpin_num_buckets=_env_int("VPIN_NUM_BUCKETS", 10),
         flow_large_trade_size=_env_float("LARGE_TRADE_SIZE", 75.0),
@@ -107,9 +115,9 @@ def load_config() -> TraderConfig:
         hedge_max_exposure_ratio=_env_float("HEDGE_MAX_EXPOSURE_RATIO", 0.25),
         hedge_min_confidence=_env_float("HEDGE_MIN_CONFIDENCE", 0.85),
         hedge_max_entry_price=_env_float("HEDGE_MAX_ENTRY_PRICE", 0.35),
-        max_wager_per_side_usdc=_env_float("MAX_WAGER_PER_SIDE_USDC", 5.0),
+        max_wager_per_side_usdc=_env_float("MAX_WAGER_PER_SIDE_USDC", 20.0),
         max_single_wager_usdc=_env_float("MAX_SINGLE_WAGER_USDC", 5.0),
-        min_wager_usdc=_env_float("MIN_WAGER_USDC", 1.0),
+        min_wager_usdc=_env_float("MIN_WAGER_USDC", 2.0),
         min_shares_per_purchase=_env_float("MIN_SHARES_PER_PURCHASE", 5.0),
         enable_convexity_budget_reservation=_env_bool("ENABLE_CONVEXITY_BUDGET_RESERVATION", False),
         allow_both_sides=_env_bool("ALLOW_BOTH_SIDES", True),
@@ -119,10 +127,16 @@ def load_config() -> TraderConfig:
         take_profit_trigger_price=_env_float("TAKE_PROFIT_TRIGGER_PRICE", 0.94),
         take_profit_limit_price=_env_float("TAKE_PROFIT_LIMIT_PRICE", 0.95),
         take_profit_min_remaining_sec=_env_int("TAKE_PROFIT_MIN_REMAINING_SEC", 120),
+        entry_warmup_min_seconds=_env_float("ENTRY_WARMUP_MIN_SECONDS", 60.0),
+        entry_warmup_min_ws_ticks=_env_int("ENTRY_WARMUP_MIN_WS_TICKS", 5),
+        entry_warmup_min_indicator_updates=_env_int("ENTRY_WARMUP_MIN_INDICATOR_UPDATES", 5),
+        enable_event_driven_loops=_env_bool("ENABLE_EVENT_DRIVEN_LOOPS", True),
+        event_driven_max_wait_ms=_env_int("EVENT_DRIVEN_MAX_WAIT_MS", 250),
         indicator_interval_ms=_env_int("INDICATOR_INTERVAL_MS", 100),
         signal_interval_ms=_env_int("SIGNAL_INTERVAL_MS", 100),
         execution_interval_ms=_env_int("EXECUTION_INTERVAL_MS", 75),
         supabase_flush_interval_ms=_env_int("SUPABASE_FLUSH_INTERVAL_MS", 200),
+        ws_tick_log_sample_every=_env_int("WS_TICK_LOG_SAMPLE_EVERY", 25),
         min_remaining_seconds_to_run=_env_int("MIN_REMAINING_SECONDS_TO_RUN", 1),
     )
 

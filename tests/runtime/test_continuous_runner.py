@@ -104,6 +104,7 @@ def test_runner_control_flags_and_snapshot() -> None:
 
     runner.request_stop()
     assert runner.snapshot()["stop_requested"] is True
+    assert runner.is_paused is False
 
 
 def test_runner_snapshot_includes_default_activity_payload() -> None:
